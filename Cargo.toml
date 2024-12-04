@@ -1,0 +1,16 @@
+[package]
+name = "audio_playback"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+arrayvec = "0.7.6"
+colog = "1.3.0"
+cpal = "0.15.3"
+log = "0.4.22"
+num-traits = "0.2.19"
+rb = "0.4.1"
+reqwest = { version = "0.12.9", features = ["blocking"] }
+rubato = "0.16.1"
+symphonia = { version = "0.5.4", features = ["all-codecs", "opt-simd"] }
+thiserror = "1.0.64"
