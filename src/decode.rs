@@ -1,16 +1,35 @@
+use std::fs::File;
+
 use cpal::traits::HostTrait as _;
-use symphonia::core::{codecs::{DecoderOptions, CODEC_TYPE_NULL}, formats::FormatOptions, io::{MediaSource, MediaSourceStream}, meta::MetadataOptions, probe::Hint};
+use cpal::Device;
+use symphonia::core::{codecs::{DecoderOptions, CODEC_TYPE_NULL}, formats::FormatOptions, io::MediaSourceStream, meta::MetadataOptions, probe::Hint};
 use crate::audio_output::{open_output, AudioOutput};
 
-pub struct RustPlayer<S: MediaSource + 'static> {
+pub struct RustPlayer {
     uri: Option<String>,
-    source: Option<S>,
+    uri_next: Option<String>,
     audio_output: Option<Box<dyn AudioOutput>>,
+    output_device: Option<Device>,
 }
 
-impl<S: MediaSource> RustPlayer<S> {
-    pub fn new(source: S) -> RustPlayer<S> {
-        let mss = MediaSourceStream::new(Box::new(source), Default::default());
+impl RustPlayer {
+    pub fn new() -> RustPlayer {
+        let host = cpal::default_host();
+        let device = host.default_output_device().expect("no output device available");
+
+        Self {
+            uri: None,
+            uri_next: None,
+            audio_output: None,
+            output_device: Some(device),
+        }
+    }
+
+    pub fn set_uri(&mut self, uri: &str) {
+        self.uri = Some(uri.to_string());
+        let file = File::open(self.uri.as_ref().unwrap()).unwrap();
+
+        let mss = MediaSourceStream::new(Box::new(file), Default::default());
 
         let meta_opts: MetadataOptions = Default::default();
         let fmt_opts: FormatOptions = FormatOptions {
@@ -36,10 +55,6 @@ impl<S: MediaSource> RustPlayer<S> {
             .expect("unsupported codec");
 
         let track_id = track.id;
-
-        let host = cpal::default_host();
-        let device = host.default_output_device().expect("no output device available");
-        let mut audio_output: Option<Box<dyn AudioOutput>> = None;
 
         loop {
             // Get the next packet from the media format.
@@ -68,18 +83,19 @@ impl<S: MediaSource> RustPlayer<S> {
                 continue;
             }
 
+
             // Decode the packet into audio samples.
             match decoder.decode(&packet) {
                 Ok(decoded) => {
-                    if audio_output.is_none() {
+                    if self.audio_output.is_none() {
                         let spec = *decoded.spec();
                         let duration = decoded.capacity() as u64;
-                        audio_output.replace(open_output(&device, spec, duration).unwrap());
+                        self.audio_output.replace(open_output(self.output_device.as_ref().unwrap(), spec, duration).unwrap());
                     } else {
                         // Check stuff
                     }
 
-                    if let Some(audio_output) = audio_output.as_mut() {
+                    if let Some(audio_output) = self.audio_output.as_mut() {
                         audio_output.write(decoded).unwrap()
                     }
                 }
@@ -98,14 +114,8 @@ impl<S: MediaSource> RustPlayer<S> {
             }
         }
 
-        if let Some(out) = audio_output.as_mut() {
+        if let Some(out) = self.audio_output.as_mut() {
             out.flush();
-        }
-
-        Self {
-            uri: todo!(),
-            source: todo!(),
-            audio_output,
         }
     }
 }

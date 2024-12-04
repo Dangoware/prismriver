@@ -1,6 +1,8 @@
+use std::io::{self, Write};
+
 use cpal::traits::{DeviceTrait, HostTrait as _, StreamTrait};
 use cpal::Sample;
-use rb::{RbConsumer as _, RbProducer as _, SpscRb, RB as _};
+use rb::{RbConsumer as _, RbInspector, RbProducer as _, RB as _};
 use crate::resampler::Resampler;
 use symphonia::core::audio::{AudioBufferRef, SampleBuffer, SignalSpec};
 
@@ -49,7 +51,8 @@ pub trait AudioOutput {
 }
 
 pub struct AudioOutputInner<T: AudioOutputSample> {
-    ring_buf: rb::Producer<T>,
+    ring_buf: rb::SpscRb<T>,
+    ring_buf_producer: rb::Producer<T>,
     sample_buf: SampleBuffer<T>,
     stream: cpal::Stream,
     resampler: Option<crate::resampler::Resampler<T>>,
@@ -83,7 +86,7 @@ impl<T: AudioOutputSample> AudioOutputInner<T> {
         // Create a ring buffer with a capacity for up-to 200ms of audio.
         let ring_len = ((200 * config.sample_rate.0 as usize) / 1000) * spec.channels.count();
 
-        let ring_buf = SpscRb::new(ring_len);
+        let ring_buf = rb::SpscRb::new(ring_len);
         let (ring_buf_producer, ring_buf_consumer) = (ring_buf.producer(), ring_buf.consumer());
 
         let stream_result = device.build_output_stream(
@@ -109,7 +112,8 @@ impl<T: AudioOutputSample> AudioOutputInner<T> {
         };
 
         Self {
-            ring_buf: ring_buf_producer,
+            ring_buf,
+            ring_buf_producer,
             sample_buf,
             stream: stream_result,
             resampler,
@@ -139,10 +143,11 @@ impl<T: AudioOutputSample> AudioOutput for AudioOutputInner<T> {
             self.sample_buf.samples()
         };
 
-        let mut test: Vec<T> = samples.iter().map(|s| s.mul_amp(self.volume.to_f32().to_sample())).collect();
+        // Set the sample amplitude (volume) for every sample
+        let mut test: Vec<T> = samples.iter().map(|s| s.mul_amp(self.volume.as_f32().to_sample())).collect();
 
         // Write all samples to the ring buffer.
-        while let Some(written) = self.ring_buf.write_blocking(&test) {
+        while let Some(written) = self.ring_buf_producer.write_blocking(&test) {
             test = test[written..].to_vec();
         }
 
@@ -155,7 +160,7 @@ impl<T: AudioOutputSample> AudioOutput for AudioOutputInner<T> {
         if let Some(resampler) = &mut self.resampler {
             let mut remaining_samples = resampler.flush().unwrap_or_default();
 
-            while let Some(written) = self.ring_buf.write_blocking(remaining_samples) {
+            while let Some(written) = self.ring_buf_producer.write_blocking(remaining_samples) {
                 remaining_samples = &remaining_samples[written..];
             }
         }
@@ -200,7 +205,7 @@ impl Volume {
         self.0 = vol
     }
 
-    pub fn to_f32(&self) -> f32 {
+    pub fn as_f32(&self) -> f32 {
         self.0
     }
 }
