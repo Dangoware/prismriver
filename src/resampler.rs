@@ -5,20 +5,20 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use symphonia::core::audio::{AudioBuffer, AudioBufferRef, Signal, SignalSpec};
-use symphonia::core::conv::{FromSample, IntoSample};
+use symphonia::core::audio::{AudioBuffer, Signal, SignalSpec};
+use symphonia::core::conv::IntoSample;
 use symphonia::core::sample::Sample;
 
-pub struct Resampler<T> {
+pub struct Resampler {
     resampler: rubato::FftFixedIn<f32>,
     input: Vec<Vec<f32>>,
     output: Vec<Vec<f32>>,
-    interleaved: Vec<T>,
+    interleaved: Vec<f32>,
     duration: usize,
 }
 
-impl<T: Sample + FromSample<f32> + IntoSample<f32>> Resampler<T> {
-    fn resample_inner(&mut self) -> &[T] {
+impl Resampler {
+    fn resample_inner(&mut self) -> &[f32] {
         {
             let mut input: arrayvec::ArrayVec<&[f32], 32> = Default::default();
 
@@ -32,8 +32,7 @@ impl<T: Sample + FromSample<f32> + IntoSample<f32>> Resampler<T> {
                 &input,
                 &mut self.output,
                 None,
-            )
-            .unwrap();
+            ).unwrap();
         }
 
         // Remove consumed samples from the input buffer.
@@ -44,7 +43,7 @@ impl<T: Sample + FromSample<f32> + IntoSample<f32>> Resampler<T> {
         // Interleave the planar samples from Rubato.
         let num_channels = self.output.len();
 
-        self.interleaved.resize(num_channels * self.output[0].len(), T::MID);
+        self.interleaved.resize(num_channels * self.output[0].len(), f32::MID);
 
         for (i, frame) in self.interleaved.chunks_exact_mut(num_channels).enumerate() {
             for (ch, s) in frame.iter_mut().enumerate() {
@@ -56,9 +55,9 @@ impl<T: Sample + FromSample<f32> + IntoSample<f32>> Resampler<T> {
     }
 }
 
-impl<T: Sample + FromSample<f32> + IntoSample<f32>> Resampler<T> {
+impl Resampler {
     pub fn new(spec: SignalSpec, to_sample_rate: usize, duration: u64) -> Self {
-        let duration = duration as usize;
+        let duration = duration as usize * 10;
         let num_channels = spec.channels.count();
 
         let resampler = rubato::FftFixedIn::<f32>::new(
@@ -80,9 +79,12 @@ impl<T: Sample + FromSample<f32> + IntoSample<f32>> Resampler<T> {
     /// Resamples a planar/non-interleaved input.
     ///
     /// Returns the resampled samples in an interleaved format.
-    pub fn resample(&mut self, input: AudioBufferRef<'_>) -> Option<&[T]> {
+    pub fn resample(&mut self, input: AudioBuffer<f32>) -> Option<&[f32]> {
         // Copy and convert samples into input buffer.
-        convert_samples_any(&input, &mut self.input);
+        for (c, dst) in self.output.iter_mut().enumerate() {
+            let src = input.chan(c);
+            dst.extend(src.iter().map(|&s| <f32 as IntoSample<f32>>::into_sample(s)));
+        }
 
         // Check if more samples are required.
         if self.input[0].len() < self.duration {
@@ -93,7 +95,7 @@ impl<T: Sample + FromSample<f32> + IntoSample<f32>> Resampler<T> {
     }
 
     /// Resample any remaining samples in the resample buffer.
-    pub fn flush(&mut self) -> Option<&[T]> {
+    pub fn flush(&mut self) -> Option<&[f32]> {
         let len = self.input[0].len();
 
         if len == 0 {
@@ -111,27 +113,5 @@ impl<T: Sample + FromSample<f32> + IntoSample<f32>> Resampler<T> {
         }
 
         Some(self.resample_inner())
-    }
-}
-
-fn convert_samples_any(input: &AudioBufferRef<'_>, output: &mut [Vec<f32>]) {
-    match input {
-        AudioBufferRef::U8(input) => convert_samples(input, output),
-        AudioBufferRef::U16(input) => convert_samples(input, output),
-        AudioBufferRef::U24(input) => convert_samples(input, output),
-        AudioBufferRef::U32(input) => convert_samples(input, output),
-        AudioBufferRef::S8(input) => convert_samples(input, output),
-        AudioBufferRef::S16(input) => convert_samples(input, output),
-        AudioBufferRef::S24(input) => convert_samples(input, output),
-        AudioBufferRef::S32(input) => convert_samples(input, output),
-        AudioBufferRef::F32(input) => convert_samples(input, output),
-        AudioBufferRef::F64(input) => convert_samples(input, output),
-    }
-}
-
-fn convert_samples<S: Sample + IntoSample<f32>,>(input: &AudioBuffer<S>, output: &mut [Vec<f32>]) {
-    for (c, dst) in output.iter_mut().enumerate() {
-        let src = input.chan(c);
-        dst.extend(src.iter().map(|&s| s.into_sample()));
     }
 }

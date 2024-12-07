@@ -1,10 +1,8 @@
-use std::io::{self, Write};
-
-use cpal::traits::{DeviceTrait, HostTrait as _, StreamTrait};
-use cpal::Sample;
-use rb::{RbConsumer as _, RbInspector, RbProducer as _, RB as _};
+use cpal::{traits::{DeviceTrait, StreamTrait}, Sample as _};
+use log::{error, info};
+use rb::{RbConsumer as _, RbProducer as _, RB as _};
 use crate::resampler::Resampler;
-use symphonia::core::audio::{AudioBufferRef, SampleBuffer, SignalSpec};
+use symphonia::core::audio::{AudioBuffer, AudioBufferRef, SampleBuffer, Signal, SignalSpec};
 
 #[allow(dead_code)]
 #[allow(clippy::enum_variant_names)]
@@ -16,17 +14,6 @@ pub enum AudioOutputError {
 }
 
 pub fn open_output(device: &cpal::Device, spec: SignalSpec, duration: u64) -> Result<Box<dyn AudioOutput>, AudioOutputError> {
-    // Get default host.
-    let host = cpal::default_host();
-
-    // Get the default audio output device.
-    let device = match host.default_output_device() {
-        Some(device) => device,
-        _ => {
-            return Err(AudioOutputError::OpenStreamError);
-        }
-    };
-
     let config = match device.default_output_config() {
         Ok(config) => config,
         Err(_err) => {
@@ -39,15 +26,26 @@ pub fn open_output(device: &cpal::Device, spec: SignalSpec, duration: u64) -> Re
         cpal::SampleFormat::F32 => Box::new(AudioOutputInner::<f32>::new(&device, spec, duration)),
         cpal::SampleFormat::I16 => Box::new(AudioOutputInner::<i16>::new(&device, spec, duration)),
         cpal::SampleFormat::U16 => Box::new(AudioOutputInner::<u16>::new(&device, spec, duration)),
+        cpal::SampleFormat::U8 => Box::new(AudioOutputInner::<u8>::new(&device, spec, duration)),
         e => panic!("{} is an unsupported sample format", e),
     })
 }
 
 pub trait AudioOutput {
-    fn write(&mut self, decoded: AudioBufferRef<'_>) -> Result<(), ()>;
+    /// Write some samples into the buffer to be played
+    fn write(&mut self, decoded: AudioBuffer<f32>) -> Result<(), ()>;
+
+    /// Flush the remaining samples from the resampler
     fn flush(&mut self);
+
+    /// Set the volume (amplitude) of the output
     fn set_volume(&mut self, vol: Volume);
+
+    /// Get the volume (amplitude) of the output
     fn volume(&self) -> Volume;
+
+    /// Get the current [`SignalSpec`]
+    fn spec(&self) -> &SignalSpec;
 }
 
 pub struct AudioOutputInner<T: AudioOutputSample> {
@@ -57,6 +55,7 @@ pub struct AudioOutputInner<T: AudioOutputSample> {
     stream: cpal::Stream,
     resampler: Option<crate::resampler::Resampler<T>>,
     volume: Volume,
+    spec: SignalSpec,
 }
 
 impl<T: AudioOutputSample> AudioOutputInner<T> {
@@ -65,23 +64,13 @@ impl<T: AudioOutputSample> AudioOutputInner<T> {
         spec: SignalSpec,
         duration: u64,
     ) -> Self {
-        let num_channels = spec.channels.count();
+        //let num_channels = spec.channels.count();
 
         // Set up CPAL stuff
-        let config = if cfg!(not(target_os = "windows")) {
-            cpal::StreamConfig {
-                channels: num_channels as cpal::ChannelCount,
-                sample_rate: cpal::SampleRate(spec.rate),
-                buffer_size: cpal::BufferSize::Default,
-            }
-        }
-        else {
-            // Use the default config for Windows.
-            device
-                .default_output_config()
-                .expect("Failed to get the default output config.")
-                .config()
-        };
+        let config = device
+            .default_output_config()
+            .expect("Failed to get the default output config.")
+            .config();
 
         // Create a ring buffer with a capacity for up-to 200ms of audio.
         let ring_len = ((200 * config.sample_rate.0 as usize) / 1000) * spec.channels.count();
@@ -99,13 +88,13 @@ impl<T: AudioOutputSample> AudioOutputInner<T> {
                 // Mute any remaining samples.
                 data[written..].iter_mut().for_each(|s| *s = T::MID);
             },
-            move |err| println!("audio output error: {}", err), None,
+            move |err| error!("audio output error: {}", err), None,
         ).unwrap();
 
         let sample_buf = SampleBuffer::<T>::new(duration, spec);
 
         let resampler = if spec.rate != config.sample_rate.0 {
-            println!("resampling {} Hz to {} Hz", spec.rate, config.sample_rate.0);
+            info!("resampling {} Hz to {} Hz", spec.rate, config.sample_rate.0);
             Some(Resampler::new(spec, config.sample_rate.0 as usize, duration))
         } else {
             None
@@ -117,13 +106,14 @@ impl<T: AudioOutputSample> AudioOutputInner<T> {
             sample_buf,
             stream: stream_result,
             resampler,
-            volume: Volume::new(0.7),
+            volume: Volume::default(),
+            spec,
         }
     }
 }
 
 impl<T: AudioOutputSample> AudioOutput for AudioOutputInner<T> {
-    fn write(&mut self, decoded: AudioBufferRef<'_>) -> Result<(), ()> {
+    fn write(&mut self, decoded: AudioBuffer<f32>) -> Result<(), ()> {
         // Do nothing if there are no audio frames.
         if decoded.frames() == 0 {
             return Ok(());
@@ -138,7 +128,7 @@ impl<T: AudioOutputSample> AudioOutput for AudioOutputInner<T> {
             }
         } else {
             // Resampling is not required. Interleave the sample for cpal using a sample buffer.
-            self.sample_buf.copy_interleaved_ref(decoded);
+            self.sample_buf.copy_interleaved_typed(&decoded);
 
             self.sample_buf.samples()
         };
@@ -176,6 +166,10 @@ impl<T: AudioOutputSample> AudioOutput for AudioOutputInner<T> {
     fn volume(&self) -> Volume {
         self.volume
     }
+
+    fn spec(&self) -> &SignalSpec {
+        &self.spec
+    }
 }
 
 pub trait AudioOutputSample:
@@ -189,8 +183,14 @@ impl AudioOutputSample for i16 {}
 impl AudioOutputSample for u16 {}
 impl AudioOutputSample for u8 {}
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Volume(f32);
+
+impl Default for Volume {
+    fn default() -> Self {
+        Self(1.0)
+    }
+}
 
 impl Volume {
     pub fn new(vol: f32) -> Self {
