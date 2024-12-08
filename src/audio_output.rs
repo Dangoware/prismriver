@@ -125,7 +125,10 @@ impl AudioOutput for AudioOutputInner {
             let mut interleaved = vec![0.; (decoded.len() / self.channels) * 2];
             for (i, frame) in interleaved.chunks_exact_mut(2).enumerate() {
                 for (ch, s) in frame.iter_mut().enumerate() {
-                    *s = decoded[(ch * decoded.len() / self.channels) + i]
+                    *s = match decoded.get((ch * decoded.len() / self.channels) + i) {
+                        Some(s) => *s,
+                        None => decoded[i],
+                    }
                 }
             }
             interleaved

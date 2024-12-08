@@ -10,38 +10,33 @@ fn main() {
     let mut player = PrismRiver::new();
     player.set_volume(Volume::new(0.4));
 
-    println!("Loading... short_test.wav");
-    player.load_new("short_test.wav").unwrap();
+    let args: Vec<String> = std::env::args().collect();
+
+    println!("Loading... {}", args[1]);
+    player.load_new(&args[1]).unwrap();
     player.set_state(State::Playing);
     println!("Playing!");
-
-    let mut duration = player.duration();
-    while duration.is_none() {
-        duration = player.duration()
-    }
-
     while player.state() == State::Playing {
         sleep(Duration::from_millis(100));
-        print!("{}/{}\r", player.position().unwrap_or_default().as_secs(), duration.unwrap().as_secs());
-        io::stdout().flush().unwrap();
-    }
-    println!();
-
-    player.load_new("short_test2.wav").unwrap();
-    player.set_state(State::Playing);
-
-    let mut duration = player.duration();
-    while duration.is_none() {
-        duration = player.duration()
-    }
-
-    while player.state() == State::Playing {
-        sleep(Duration::from_millis(100));
-        print!("{}/{}\r", player.position().unwrap_or_default().as_secs(), duration.unwrap().as_secs());
-        io::stdout().flush().unwrap();
+        print_timer(player.position().unwrap_or_default(), player.duration());
     }
     println!();
 
     println!("It's so over")
 }
 
+fn print_timer(pos: Duration, len: Option<Duration>) {
+    let len_string = if let Some(l) = len {
+        format!("{:02}:{:02}", l.as_secs() / 60, l.as_secs() % 60)
+    } else {
+        format!("--:--")
+    };
+
+    print!(
+        "{:02}:{:02}/{}\r",
+        pos.as_secs() / 60,
+        pos.as_secs() % 60,
+        len_string,
+    );
+    io::stdout().flush().unwrap();
+}

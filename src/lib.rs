@@ -284,6 +284,8 @@ fn player_loop(
                 let len = match decoder.as_mut().unwrap().next_packet_to_buf(&mut output_buffer) {
                     Ok(l) => l,
                     Err(decode::DecoderError::EndOfStream) => {
+                        // End of Stream reached, shut down everything and reset to
+                        // stopped state
                         decoder = None;
                         audio_output.as_mut().unwrap().flush();
                         *state.write().unwrap() = State::Stopped;
@@ -291,6 +293,7 @@ fn player_loop(
                         continue 'external;
                     },
                     Err(de) => {
+                        // Fatal decoder error! TODO: Communicate this somehow
                         let _ = internal_send.send(Err(PrismError::DecoderError(de)));
                         decoder = None;
                         *state.write().unwrap() = State::Stopped;
@@ -302,7 +305,7 @@ fn player_loop(
             }
             *duration.write().unwrap() = Some(decoder.as_mut().unwrap().duration().unwrap());
             *position.write().unwrap() = Some(decoder.as_mut().unwrap().position().unwrap());
-            //info!("buffer {:0.0}%", (audio_output.buffer_level().0 as f32 / audio_output.buffer_level().1 as f32) * 100.0);
+            info!("buffer {:0.0}%", (audio_output.as_mut().unwrap().buffer_level().0 as f32 / audio_output.as_mut().unwrap().buffer_level().1 as f32) * 100.0);
         }
 
         // Prevent this from hogging a core
