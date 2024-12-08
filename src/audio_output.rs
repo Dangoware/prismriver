@@ -1,8 +1,11 @@
-use cpal::{traits::{DeviceTrait, StreamTrait}, Sample as _};
-use log::{error, info};
-use rb::{RbConsumer as _, RbProducer as _, RB as _};
+use std::time::Instant;
+
+use cpal::{traits::{DeviceTrait, StreamTrait}, Sample as _, StreamConfig};
+use log::{error, info, warn};
+use num_traits::Zero;
+use rb::{RbConsumer as _, RbInspector, RbProducer as _, RB as _};
 use crate::resampler::Resampler;
-use symphonia::core::audio::{AudioBuffer, AudioBufferRef, SampleBuffer, Signal, SignalSpec};
+use symphonia::core::{audio::SignalSpec, sample::Sample};
 
 #[allow(dead_code)]
 #[allow(clippy::enum_variant_names)]
@@ -13,27 +16,24 @@ pub enum AudioOutputError {
     StreamClosedError,
 }
 
-pub fn open_output(device: &cpal::Device, spec: SignalSpec, duration: u64) -> Result<Box<dyn AudioOutput>, AudioOutputError> {
+pub fn open_output(device: &cpal::Device) -> Result<Box<dyn AudioOutput>, AudioOutputError> {
+    /* This is performed inside the trait struct now
+
     let config = match device.default_output_config() {
         Ok(config) => config,
         Err(_err) => {
             return Err(AudioOutputError::OpenStreamError);
         }
     };
+    */
 
     // Select proper playback routine based on sample format.
-    Ok(match config.sample_format() {
-        cpal::SampleFormat::F32 => Box::new(AudioOutputInner::<f32>::new(&device, spec, duration)),
-        cpal::SampleFormat::I16 => Box::new(AudioOutputInner::<i16>::new(&device, spec, duration)),
-        cpal::SampleFormat::U16 => Box::new(AudioOutputInner::<u16>::new(&device, spec, duration)),
-        cpal::SampleFormat::U8 => Box::new(AudioOutputInner::<u8>::new(&device, spec, duration)),
-        e => panic!("{} is an unsupported sample format", e),
-    })
+    Ok(Box::new(AudioOutputInner::new(&device)))
 }
 
 pub trait AudioOutput {
     /// Write some samples into the buffer to be played
-    fn write(&mut self, decoded: AudioBuffer<f32>) -> Result<(), ()>;
+    fn write(&mut self, decoded: &[f32]) -> Result<(), ()>;
 
     /// Flush the remaining samples from the resampler
     fn flush(&mut self);
@@ -44,28 +44,26 @@ pub trait AudioOutput {
     /// Get the volume (amplitude) of the output
     fn volume(&self) -> Volume;
 
-    /// Get the current [`SignalSpec`]
-    fn spec(&self) -> &SignalSpec;
+    fn update_signalspec(&mut self, spec: SignalSpec);
+
+    fn buffer_level(&self) -> (usize, usize);
+    fn buffer_healthy(&self) -> usize;
 }
 
-pub struct AudioOutputInner<T: AudioOutputSample> {
-    ring_buf: rb::SpscRb<T>,
-    ring_buf_producer: rb::Producer<T>,
-    sample_buf: SampleBuffer<T>,
+pub struct AudioOutputInner {
+    ring_buf: rb::SpscRb<f32>,
+    ring_buf_producer: rb::Producer<f32>,
     stream: cpal::Stream,
-    resampler: Option<crate::resampler::Resampler<T>>,
+    resampler: Option<crate::resampler::Resampler>,
+    stream_config: StreamConfig,
     volume: Volume,
-    spec: SignalSpec,
+    channels: usize,
 }
 
-impl<T: AudioOutputSample> AudioOutputInner<T> {
+impl AudioOutputInner {
     fn new(
         device: &cpal::Device,
-        spec: SignalSpec,
-        duration: u64,
     ) -> Self {
-        //let num_channels = spec.channels.count();
-
         // Set up CPAL stuff
         let config = device
             .default_output_config()
@@ -73,68 +71,66 @@ impl<T: AudioOutputSample> AudioOutputInner<T> {
             .config();
 
         // Create a ring buffer with a capacity for up-to 200ms of audio.
-        let ring_len = ((200 * config.sample_rate.0 as usize) / 1000) * spec.channels.count();
+        let ring_len = ((200 * config.sample_rate.0 as usize) / 1000) * config.channels as usize;
 
         let ring_buf = rb::SpscRb::new(ring_len);
         let (ring_buf_producer, ring_buf_consumer) = (ring_buf.producer(), ring_buf.consumer());
 
         let stream_result = device.build_output_stream(
             &config,
-            move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
+            move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                 // Write out as many samples as possible from the ring buffer to the audio
                 // output.
                 let written = ring_buf_consumer.read(data).unwrap_or(0);
 
                 // Mute any remaining samples.
-                data[written..].iter_mut().for_each(|s| *s = T::MID);
+                data[written..].iter_mut().for_each(|s| *s = f32::MID);
             },
             move |err| error!("audio output error: {}", err), None,
         ).unwrap();
 
-        let sample_buf = SampleBuffer::<T>::new(duration, spec);
-
-        let resampler = if spec.rate != config.sample_rate.0 {
-            info!("resampling {} Hz to {} Hz", spec.rate, config.sample_rate.0);
-            Some(Resampler::new(spec, config.sample_rate.0 as usize, duration))
-        } else {
-            None
-        };
-
         Self {
             ring_buf,
             ring_buf_producer,
-            sample_buf,
             stream: stream_result,
-            resampler,
+            stream_config: config,
+            resampler: None,
             volume: Volume::default(),
-            spec,
+            channels: 2,
         }
     }
 }
 
-impl<T: AudioOutputSample> AudioOutput for AudioOutputInner<T> {
-    fn write(&mut self, decoded: AudioBuffer<f32>) -> Result<(), ()> {
+impl AudioOutput for AudioOutputInner {
+    fn write(&mut self, decoded: &[f32]) -> Result<(), ()> {
         // Do nothing if there are no audio frames.
-        if decoded.frames() == 0 {
+        if decoded.len() == 0 {
+            warn!("decoded length was 0");
             return Ok(());
         }
 
-        let samples = if let Some(resampler) = &mut self.resampler {
+        let samples: Vec<f32> = if let Some(resampler) = &mut self.resampler {
             // Resampling is required. The resampler will return interleaved samples in the
             // correct sample format.
             match resampler.resample(decoded) {
-                Some(resampled) => resampled,
+                Some(resampled) => resampled.to_vec(),
                 None => return Ok(()),
             }
         } else {
-            // Resampling is not required. Interleave the sample for cpal using a sample buffer.
-            self.sample_buf.copy_interleaved_typed(&decoded);
-
-            self.sample_buf.samples()
+            // Interleave samples
+            let mut interleaved = vec![0.; (decoded.len() / self.channels) * 2];
+            for (i, frame) in interleaved.chunks_exact_mut(2).enumerate() {
+                for (ch, s) in frame.iter_mut().enumerate() {
+                    *s = decoded[(ch * decoded.len() / self.channels) + i]
+                }
+            }
+            interleaved
         };
 
         // Set the sample amplitude (volume) for every sample
-        let mut test: Vec<T> = samples.iter().map(|s| s.mul_amp(self.volume.as_f32().to_sample())).collect();
+        let mut test: Vec<f32> = samples.iter().map(|s| s.mul_amp(self.volume.as_f32().to_sample())).collect();
+
+        //info!("{} samples to a buffer with a capacity for {}", samples.len(), self.ring_buf.capacity());
 
         // Write all samples to the ring buffer.
         while let Some(written) = self.ring_buf_producer.write_blocking(&test) {
@@ -148,10 +144,10 @@ impl<T: AudioOutputSample> AudioOutput for AudioOutputInner<T> {
         // If there is a resampler, then it may need to be flushed
         // depending on the number of samples it has.
         if let Some(resampler) = &mut self.resampler {
-            let mut remaining_samples = resampler.flush().unwrap_or_default();
+            let mut remaining_samples: Vec<_> = resampler.flush().unwrap_or_default().iter().map(|s| s.to_sample()).collect();
 
-            while let Some(written) = self.ring_buf_producer.write_blocking(remaining_samples) {
-                remaining_samples = &remaining_samples[written..];
+            while let Some(written) = self.ring_buf_producer.write_blocking(&remaining_samples) {
+                remaining_samples = remaining_samples[written..].to_vec();
             }
         }
 
@@ -167,8 +163,31 @@ impl<T: AudioOutputSample> AudioOutput for AudioOutputInner<T> {
         self.volume
     }
 
-    fn spec(&self) -> &SignalSpec {
-        &self.spec
+    fn update_signalspec(&mut self, spec: SignalSpec) {
+        if spec.rate != self.stream_config.sample_rate.0 {
+            info!(
+                "resampling {} Hz to {} Hz, buffer size of {} bytes",
+                spec.rate,
+                self.stream_config.sample_rate.0,
+                spec.rate * spec.channels.count() as u32 / 20
+            );
+
+            self.resampler = Some(Resampler::new(
+                spec,
+                self.stream_config.sample_rate.0 as usize,
+                10_000, // TODO: Maybe figure out a better way than hardcoding this?
+            ));
+        };
+
+        self.channels = spec.channels.count()
+    }
+
+    fn buffer_level(&self) -> (usize, usize) {
+        (self.ring_buf.count(), self.ring_buf.capacity())
+    }
+
+    fn buffer_healthy(&self) -> usize {
+        self.ring_buf.capacity() - (self.ring_buf.capacity() / 2)
     }
 }
 

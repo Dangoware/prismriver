@@ -1,13 +1,12 @@
-use std::{fs::File, thread, time::Duration};
+use std::{fs::File, thread, time::{Duration, Instant}};
 
-use arrayvec::ArrayVec;
 use cpal::traits::HostTrait as _;
 use cpal::Device;
 use crossbeam::channel::{self, Receiver};
 use log::{info, warn};
-use symphonia::core::{audio::{AudioBuffer, AudioBufferRef, Channels, SampleBuffer, Signal, SignalSpec}, codecs::{DecoderOptions, CODEC_TYPE_NULL}, formats::{FormatOptions, FormatReader}, io::MediaSourceStream, meta::MetadataOptions, probe::Hint};
+use symphonia::core::{audio::{SampleBuffer, SignalSpec}, codecs::{DecoderOptions, CODEC_TYPE_NULL}, formats::{FormatOptions, FormatReader}, io::{MediaSourceStream, MediaSourceStreamOptions}, meta::MetadataOptions, probe::Hint};
 use thiserror::Error;
-use crate::audio_output::{self, open_output, AudioOutput, Volume};
+use crate::audio_output::{open_output, AudioOutput, Volume};
 
 #[derive(Debug, Clone, Copy)]
 pub enum Command {
@@ -22,7 +21,7 @@ pub enum InternalMessage {
     Volume(Volume),
 
     /// Set up the thread with a new stream
-    LoadNew(File),
+    LoadNew(MediaSourceStream),
 
     /// Give the thread a new output device
     NewOutputDevice(Device),
@@ -66,7 +65,9 @@ impl Prismriver {
         self.uri_current = Some(uri.to_string());
         let file = File::open(self.uri_current.as_ref().unwrap()).unwrap();
 
-        self.internal_send.send(InternalMessage::LoadNew(file)).unwrap();
+        self.internal_send.send(InternalMessage::LoadNew(
+            MediaSourceStream::new(Box::new(file), MediaSourceStreamOptions::default()))
+        ).unwrap();
     }
 
     pub fn volume(&self) -> Volume {
@@ -86,7 +87,7 @@ impl Drop for Prismriver {
 }
 
 const LOOP_DELAY_US: Duration = Duration::from_micros(5000);
-const BUFFER_MAX: u64 = 240000 / 4;
+pub const BUFFER_MAX: u64 = 240000 / 4;
 
 fn player_loop(internal_recv: Receiver<InternalMessage>, command_recv: Receiver<Command>) {
     let mut audio_output: Option<Box<dyn AudioOutput>> = None;
@@ -94,30 +95,37 @@ fn player_loop(internal_recv: Receiver<InternalMessage>, command_recv: Receiver<
     let mut decoder: Option<Box<dyn Decoder>> = None;
     let mut volume = Volume::default();
 
+    let mut spec = None;
+
     let mut output_buffer = [0f32; BUFFER_MAX as usize];
 
     loop {
+        let timer = Instant::now();
         // Check if there are any internal commands to process
         if let Ok(r) = internal_recv.try_recv() {
             match r {
                 InternalMessage::LoadNew(f) => {
-                    decoder = Some(if true {
-                        Box::new(SymphoniaDecoder::new(f))
-                    } else {
-                        unreachable!()
-                    });
+                    if audio_output.is_none() {
+                        panic!("This shouldn't be possible!")
+                    }
+
+                    decoder = Some(Box::new(SymphoniaDecoder::new(f)));
+
+                    spec = Some(decoder.as_ref().unwrap().spec());
+                    audio_output.as_mut().unwrap().update_signalspec(spec.unwrap());
                 },
                 InternalMessage::Volume(v) => {
-                    volume = v
+                    volume = v;
+                    if let Some(a) = audio_output.as_mut() {
+                        a.set_volume(volume)
+                    }
+                    info!("volume is now {:0.0}%", v.as_f32() * 100.0);
                 }
                 InternalMessage::NewOutputDevice(device) => {
                     output_device = Some(device);
-
-                    audio_output = Some(open_output(
-                        &output_device.unwrap(),
-                        SignalSpec::new(44_100, Channels::from_bits_truncate(2)),
-                        BUFFER_MAX,
-                    ).unwrap());
+                    let mut a_out = open_output(&output_device.unwrap()).unwrap();
+                    a_out.set_volume(volume);
+                    audio_output = Some(a_out);
                 },
                 InternalMessage::Destroy => {
                     warn!("Destroying playback thread");
@@ -139,12 +147,13 @@ fn player_loop(internal_recv: Receiver<InternalMessage>, command_recv: Receiver<
             continue;
         };
 
-        let len = decoder.next_packet_to_buf(&mut output_buffer).unwrap();
-        dbg!(&output_buffer[0..len]);
-        let buf = AudioBuffer::new(BUFFER_MAX, SignalSpec { rate: 44100, channels: Channels::from_bits_truncate(2) });
-        audio_output.write(&output_buffer[0..len]);
+        // Only decode when buffer is below 50% full
+        while audio_output.buffer_level().0 < audio_output.buffer_healthy() {
+            let len = decoder.next_packet_to_buf(&mut output_buffer).unwrap();
+            audio_output.write(&output_buffer[0..len]).unwrap();
+        }
 
-        thread::sleep(LOOP_DELAY_US);
+        thread::sleep(LOOP_DELAY_US.saturating_sub(timer.elapsed()));
     }
 }
 
@@ -162,10 +171,13 @@ pub enum DecoderError {
 }
 
 pub trait Decoder {
-    fn new(file: File) -> Self where Self: Sized;
+    fn new(input: MediaSourceStream) -> Self where Self: Sized;
+
     /// Write the decoder's audio bytes into the provided buffer, and return the
     /// number of bytes written
     fn next_packet_to_buf(&mut self, buf: &mut [f32]) -> Result<usize, DecoderError>;
+
+    fn spec(&self) -> SignalSpec;
 }
 
 struct SymphoniaDecoder {
@@ -173,13 +185,11 @@ struct SymphoniaDecoder {
     decoder: Box<dyn symphonia::core::codecs::Decoder>,
     sample_buf: Option<SampleBuffer<f32>>,
     track_id: u32,
-    spec: Option<SignalSpec>,
+    spec: SignalSpec,
 }
 
 impl Decoder for SymphoniaDecoder {
-    fn new(file: File) -> Self {
-        let mss = MediaSourceStream::new(Box::new(file), Default::default());
-
+    fn new(input: MediaSourceStream) -> Self {
         let meta_opts: MetadataOptions = Default::default();
         let fmt_opts: FormatOptions = FormatOptions {
             enable_gapless: true,
@@ -187,7 +197,7 @@ impl Decoder for SymphoniaDecoder {
         };
 
         let probed = symphonia::default::get_probe()
-            .format(&Hint::new(), mss, &fmt_opts, &meta_opts)
+            .format(&Hint::new(), input, &fmt_opts, &meta_opts)
             .expect("unsupported format");
         let format_reader = probed.format;
 
@@ -205,11 +215,14 @@ impl Decoder for SymphoniaDecoder {
         let track_id = track.id;
 
         Self {
+            spec: SignalSpec::new(
+                decoder.codec_params().sample_rate.unwrap(),
+                decoder.codec_params().channels.unwrap()
+            ),
             format_reader,
             decoder,
             track_id,
             sample_buf: None,
-            spec: None,
         }
     }
 
@@ -245,15 +258,14 @@ impl Decoder for SymphoniaDecoder {
             // Decode the packet into audio samples.
             match self.decoder.decode(&packet) {
                 Ok(decoded) => {
-                    self.spec = Some(*decoded.spec());
+                    self.spec = *decoded.spec();
 
                     if self.sample_buf.is_none() {
                         self.sample_buf = Some(SampleBuffer::new(decoded.capacity() as u64, *decoded.spec()));
                     }
 
-                    let proper_format: AudioBuffer<f32> = decoded.make_equivalent();
-
-                    self.sample_buf.as_mut().unwrap().copy_planar_typed(&proper_format);
+                    // Copy the decoded samples to a buffer (why is it this convoluted?)
+                    self.sample_buf.as_mut().unwrap().copy_planar_ref(decoded);
                     let len = self.sample_buf.as_mut().unwrap().len();
                     buf[offset..offset + len].copy_from_slice(self.sample_buf.as_mut().unwrap().samples());
                     offset += len;
@@ -277,5 +289,9 @@ impl Decoder for SymphoniaDecoder {
         }
 
         Ok(offset)
+    }
+
+    fn spec(&self) -> SignalSpec {
+        self.spec
     }
 }

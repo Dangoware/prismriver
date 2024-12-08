@@ -5,16 +5,18 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use symphonia::core::audio::{AudioBuffer, Signal, SignalSpec};
+use rubato::PolynomialDegree;
+use symphonia::core::audio::SignalSpec;
 use symphonia::core::conv::IntoSample;
 use symphonia::core::sample::Sample;
 
 pub struct Resampler {
-    resampler: rubato::FftFixedIn<f32>,
+    resampler: rubato::FastFixedIn<f32>,
     input: Vec<Vec<f32>>,
     output: Vec<Vec<f32>>,
     interleaved: Vec<f32>,
     duration: usize,
+    channels: usize,
 }
 
 impl Resampler {
@@ -41,10 +43,9 @@ impl Resampler {
         }
 
         // Interleave the planar samples from Rubato.
-        let num_channels = self.output.len();
+        let num_channels = 2;
 
-        self.interleaved.resize(num_channels * self.output[0].len(), f32::MID);
-
+        self.interleaved.resize(num_channels * self.output[0].len(), 0.0);
         for (i, frame) in self.interleaved.chunks_exact_mut(num_channels).enumerate() {
             for (ch, s) in frame.iter_mut().enumerate() {
                 *s = self.output[ch][i].into_sample();
@@ -57,33 +58,37 @@ impl Resampler {
 
 impl Resampler {
     pub fn new(spec: SignalSpec, to_sample_rate: usize, duration: u64) -> Self {
-        let duration = duration as usize * 10;
-        let num_channels = spec.channels.count();
+        let duration = duration as usize;
+        let channels = spec.channels.count();
 
-        let resampler = rubato::FftFixedIn::<f32>::new(
-            spec.rate as usize,
-            to_sample_rate,
+        let ratio = to_sample_rate as f64 / spec.rate as f64;
+
+        let resampler = rubato::FastFixedIn::<f32>::new(
+            ratio,
+            1.0,
+            PolynomialDegree::Cubic,
             duration,
-            2,
-            num_channels,
+            channels,
         )
         .unwrap();
 
         let output = rubato::Resampler::output_buffer_allocate(&resampler, true);
 
-        let input = vec![Vec::with_capacity(duration); num_channels];
+        let input = vec![Vec::with_capacity(duration); channels];
 
-        Self { resampler, input, output, duration, interleaved: Default::default() }
+        Self { resampler, input, output, duration, interleaved: Default::default(), channels }
     }
 
     /// Resamples a planar/non-interleaved input.
     ///
     /// Returns the resampled samples in an interleaved format.
-    pub fn resample(&mut self, input: AudioBuffer<f32>) -> Option<&[f32]> {
+    pub fn resample(&mut self, input: &[f32]) -> Option<&[f32]> {
         // Copy and convert samples into input buffer.
-        for (c, dst) in self.output.iter_mut().enumerate() {
-            let src = input.chan(c);
-            dst.extend(src.iter().map(|&s| <f32 as IntoSample<f32>>::into_sample(s)));
+        let mut offset = 0;
+        for (_, dst) in self.input.iter_mut().enumerate() {
+            let n = offset + (input.len() / self.channels);
+            dst.extend(input[offset..n].iter().map(|&s| <f32 as IntoSample<f32>>::into_sample(s)));
+            offset += input.len() / self.channels;
         }
 
         // Check if more samples are required.
