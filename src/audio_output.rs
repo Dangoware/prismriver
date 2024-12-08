@@ -1,8 +1,5 @@
-use std::time::Instant;
-
 use cpal::{traits::{DeviceTrait, StreamTrait}, Sample as _, StreamConfig};
 use log::{error, info, warn};
-use num_traits::Zero;
 use rb::{RbConsumer as _, RbInspector, RbProducer as _, RB as _};
 use crate::resampler::Resampler;
 use symphonia::core::{audio::SignalSpec, sample::Sample};
@@ -58,6 +55,7 @@ pub struct AudioOutputInner {
     stream_config: StreamConfig,
     volume: Volume,
     channels: usize,
+    state: bool,
 }
 
 impl AudioOutputInner {
@@ -97,6 +95,7 @@ impl AudioOutputInner {
             resampler: None,
             volume: Volume::default(),
             channels: 2,
+            state: false,
         }
     }
 }
@@ -107,6 +106,11 @@ impl AudioOutput for AudioOutputInner {
         if decoded.len() == 0 {
             warn!("decoded length was 0");
             return Ok(());
+        }
+
+        if !self.state {
+            self.stream.play().unwrap();
+            self.state = true
         }
 
         let samples: Vec<f32> = if let Some(resampler) = &mut self.resampler {
@@ -153,6 +157,7 @@ impl AudioOutput for AudioOutputInner {
 
         // Flush is best-effort, ignore the returned result.
         let _ = self.stream.pause();
+        self.state = false;
     }
 
     fn set_volume(&mut self, vol: Volume) {
@@ -164,19 +169,23 @@ impl AudioOutput for AudioOutputInner {
     }
 
     fn update_signalspec(&mut self, spec: SignalSpec) {
+        // If the sample rate is not equal to the output sample rate,
+        // create a resampler to correct it
         if spec.rate != self.stream_config.sample_rate.0 {
             info!(
                 "resampling {} Hz to {} Hz, buffer size of {} bytes",
                 spec.rate,
                 self.stream_config.sample_rate.0,
-                spec.rate * spec.channels.count() as u32 / 20
+                16384
             );
 
             self.resampler = Some(Resampler::new(
                 spec,
                 self.stream_config.sample_rate.0 as usize,
-                10_000, // TODO: Maybe figure out a better way than hardcoding this?
+                16384, // TODO: Maybe figure out a better way than hardcoding this?
             ));
+        } else {
+            self.resampler = None;
         };
 
         self.channels = spec.channels.count()
@@ -190,17 +199,6 @@ impl AudioOutput for AudioOutputInner {
         self.ring_buf.capacity() - (self.ring_buf.capacity() / 2)
     }
 }
-
-pub trait AudioOutputSample:
-    cpal::Sample + symphonia::core::conv::ConvertibleSample + symphonia::core::conv::IntoSample<f32> + symphonia::core::audio::RawSample + std::marker::Send + 'static
-    + cpal::SizedSample + std::fmt::Debug
-{
-}
-
-impl AudioOutputSample for f32 {}
-impl AudioOutputSample for i16 {}
-impl AudioOutputSample for u16 {}
-impl AudioOutputSample for u8 {}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Volume(f32);

@@ -110,23 +110,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
-name = "audio_playback"
-version = "0.1.0"
-dependencies = [
- "arrayvec",
- "colog",
- "cpal",
- "crossbeam",
- "log",
- "num-traits",
- "rb",
- "reqwest",
- "rubato",
- "symphonia",
- "thiserror",
-]
-
-[[package]]
 name = "autocfg"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1257,6 +1240,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc0d895b311e3af9902528fbb8f928688abbd95872819320517cc24ca6b2bd08"
 dependencies = [
  "num-integer",
+]
+
+[[package]]
+name = "prismriver"
+version = "0.1.0"
+dependencies = [
+ "arrayvec",
+ "colog",
+ "cpal",
+ "crossbeam",
+ "log",
+ "num-traits",
+ "rb",
+ "reqwest",
+ "rubato",
+ "symphonia",
+ "thiserror",
 ]
 
 [[package]]

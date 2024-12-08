@@ -5,13 +5,12 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use rubato::PolynomialDegree;
 use symphonia::core::audio::SignalSpec;
 use symphonia::core::conv::IntoSample;
 use symphonia::core::sample::Sample;
 
 pub struct Resampler {
-    resampler: rubato::FastFixedIn<f32>,
+    resampler: rubato::FftFixedIn<f32>,
     input: Vec<Vec<f32>>,
     output: Vec<Vec<f32>>,
     interleaved: Vec<f32>,
@@ -61,16 +60,24 @@ impl Resampler {
         let duration = duration as usize;
         let channels = spec.channels.count();
 
-        let ratio = to_sample_rate as f64 / spec.rate as f64;
+        let resampler = rubato::FftFixedIn::<f32>::new(
+            spec.rate as usize,
+            to_sample_rate,
+            duration,
+            2,
+            channels,
+        ).unwrap();
 
+        /*
+        let ratio = to_sample_rate as f64 / spec.rate as f64;
         let resampler = rubato::FastFixedIn::<f32>::new(
             ratio,
             1.0,
-            PolynomialDegree::Cubic,
+            PolynomialDegree::Septic,
             duration,
             channels,
-        )
-        .unwrap();
+        ).unwrap();
+        */
 
         let output = rubato::Resampler::output_buffer_allocate(&resampler, true);
 
