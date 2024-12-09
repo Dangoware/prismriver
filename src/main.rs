@@ -10,17 +10,19 @@ fn main() {
     let mut player = PrismRiver::new();
     player.set_volume(Volume::new(0.4));
 
-    let args: Vec<String> = std::env::args().collect();
+    let args: Vec<String> = std::env::args().skip(1).collect();
 
-    println!("Loading... {}", args[1]);
-    player.load_new(&args[1]).unwrap();
-    player.set_state(State::Playing);
-    println!("Playing!");
-    while player.state() == State::Playing {
-        sleep(Duration::from_millis(100));
-        print_timer(player.position().unwrap_or_default(), player.duration());
+    for path in args {
+        println!("Loading... {}", path);
+        player.load_new(&path).unwrap();
+        player.set_state(State::Playing);
+        println!("Playing!");
+        while player.state() == State::Playing {
+            sleep(Duration::from_millis(100));
+            print_timer(player.position().unwrap_or_default(), player.duration());
+        }
+        println!();
     }
-    println!();
 
     println!("It's so over")
 }

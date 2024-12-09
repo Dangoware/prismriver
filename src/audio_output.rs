@@ -3,7 +3,7 @@ use std::ops::Mul;
 use cpal::{traits::{DeviceTrait as _, StreamTrait}, Stream, StreamConfig};
 use log::{error, info, warn};
 use rb::{RbConsumer as _, RbInspector, RbProducer as _, RB as _};
-use samplerate::Samplerate;
+use samplerate::{ConverterType, Samplerate};
 use crate::BUFFER_MAX;
 use symphonia::core::{audio::SignalSpec, sample::Sample};
 
@@ -55,35 +55,25 @@ pub struct AudioOutputInner {
     ring_buf_producer: rb::Producer<f32>,
     resampler: Option<samplerate::Samplerate>,
     volume: Volume,
-    channels: usize,
+    channels: u16,
     state: bool,
 
     output_stream: Stream,
     output_params: StreamConfig,
-
-    scratch_buffer: Vec<f32>,
 }
 
-const OUTPUT_RATE_HZ: usize = 44100;
-const OUTPUT_COUNT: usize = OUTPUT_RATE_HZ / 100;
+const OUTPUT_RATE_HZ: u32 = 44100;
+const OUTPUT_BUFFER_SIZE: u32 = OUTPUT_RATE_HZ / 100;
+const CHANNELS_OUT: u16 = 2;
 
 impl AudioOutputInner {
     fn new(
         device: &cpal::Device,
     ) -> Self {
-        let output_params = if cfg!(not(target_os = "windows")) {
-            cpal::StreamConfig {
-                channels: 2,
-                sample_rate: cpal::SampleRate(44100),
-                buffer_size: cpal::BufferSize::Default,
-            }
-        }
-        else {
-            // Use the default config for Windows.
-            device
-                .default_output_config()
-                .expect("Failed to get the default output config.")
-                .config()
+        let output_params = cpal::StreamConfig {
+            channels: CHANNELS_OUT,
+            sample_rate: cpal::SampleRate(OUTPUT_RATE_HZ),
+            buffer_size: cpal::BufferSize::Default,
         };
 
         // Create a ring buffer with a capacity for up-to 200ms of audio.
@@ -111,13 +101,11 @@ impl AudioOutputInner {
             ring_buf_producer,
             resampler: None,
             volume: Volume::default(),
-            channels: 2,
+            channels: CHANNELS_OUT,
             state: false,
 
             output_stream,
             output_params,
-
-            scratch_buffer: vec![0f32; BUFFER_MAX as usize],
         }
     }
 }
@@ -136,15 +124,18 @@ impl AudioOutput for AudioOutputInner {
         }
 
         // Interleave samples
-        let mut interleaved = vec![0.; (decoded.len() / self.channels) * 2];
+        let mut interleaved = vec![0.; (decoded.len() / self.channels as usize) * 2];
         for (i, frame) in interleaved.chunks_exact_mut(2).enumerate() {
             for (ch, s) in frame.iter_mut().enumerate() {
-                *s = match decoded.get((ch * decoded.len() / self.channels) + i) {
+                *s = match decoded.get((ch * decoded.len() / self.channels as usize) + i) {
                     Some(s) => *s,
-                    None => decoded[i],
+                    None => {
+                        decoded[i]
+                    },
                 }
             }
         }
+
 
         let samples = if let Some(resampler) = &mut self.resampler {
             // Resampling is required. The resampler will return interleaved samples in the
@@ -197,16 +188,27 @@ impl AudioOutput for AudioOutputInner {
         // If the sample rate is not equal to the output sample rate,
         // create a resampler to correct it
         if spec.rate != self.output_params.sample_rate.0 {
+            let resample_ratio = spec.rate as f64 / self.output_params.sample_rate.0 as f64;
             info!(
                 "resampling {} Hz to {} Hz ({:0.4}), buffer size of {} bytes",
                 spec.rate,
                 self.output_params.sample_rate.0,
-                spec.rate as f64 / self.output_params.sample_rate.0 as f64,
+                resample_ratio,
                 duration,
             );
 
+            // Chose samplerate conversion based on how extreme the sample ratio is
+            // TODO: Make this settable manually
+            let converter = match resample_ratio {
+                r if r <= 2.0 => ConverterType::SincBestQuality,
+                r if r <= 3.0 => ConverterType::SincMediumQuality,
+                r if r <= 4.0 => ConverterType::SincFastest,
+                _ => ConverterType::Linear,
+            };
+            info!("chose {:?} due to sample ratio of {:0.4}", converter, resample_ratio);
+
             self.resampler = Some(Samplerate::new(
-                samplerate::ConverterType::SincMediumQuality,
+                converter,
                 spec.rate,
                 self.output_params.sample_rate.0,
                 2,
@@ -215,7 +217,7 @@ impl AudioOutput for AudioOutputInner {
             self.resampler = None;
         };
 
-        self.channels = spec.channels.count()
+        self.channels = spec.channels.count() as u16
     }
 
     fn buffer_level(&self) -> (usize, usize) {

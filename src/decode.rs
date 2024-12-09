@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use log::warn;
 use symphonia::core::{audio::{SampleBuffer, SignalSpec}, codecs::{CodecParameters, DecoderOptions, CODEC_TYPE_NULL}, formats::{FormatOptions, FormatReader, SeekMode, SeekTo}, io::MediaSourceStream, meta::MetadataOptions, probe::Hint, units::Time};
 use thiserror::Error;
 
@@ -67,6 +68,10 @@ impl Decoder for SymphoniaDecoder {
         let decoder = symphonia::default::get_codecs()
             .make(&track.codec_params, &dec_opts)
             .expect("unsupported codec");
+
+        if decoder.codec_params().channels.unwrap_or_default().count() < 2 {
+            warn!("mono audio will be sent in stereo to both left and right");
+        }
 
         let track_id = track.id;
         let params = track.codec_params.clone();
