@@ -31,6 +31,7 @@ pub trait Decoder {
     fn next_packet_to_buf(&mut self, buf: &mut [f32]) -> Result<usize, DecoderError>;
 
     fn spec(&self) -> SignalSpec;
+    fn max_packet_size(&self) -> u64;
 }
 
 pub struct SymphoniaDecoder {
@@ -191,5 +192,9 @@ impl Decoder for SymphoniaDecoder {
 
     fn spec(&self) -> SignalSpec {
         self.spec
+    }
+
+    fn max_packet_size(&self) -> u64 {
+        self.params.max_frames_per_packet.unwrap_or(4096)
     }
 }

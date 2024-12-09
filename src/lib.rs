@@ -231,7 +231,10 @@ fn player_loop(
                     };
 
                     spec = Some(decoder.as_ref().unwrap().spec());
-                    audio_output.as_mut().unwrap().update_signalspec(spec.unwrap());
+                    audio_output.as_mut().unwrap().update_signalspec(
+                        spec.unwrap(),
+                        decoder.as_ref().unwrap().max_packet_size(),
+                    );
                     internal_send.try_send(Ok(())).unwrap();
                 },
                 InternalMessage::LoadNext(f) => {
@@ -305,7 +308,7 @@ fn player_loop(
             }
             *duration.write().unwrap() = Some(decoder.as_mut().unwrap().duration().unwrap());
             *position.write().unwrap() = Some(decoder.as_mut().unwrap().position().unwrap());
-            info!("buffer {:0.0}%", (audio_output.as_mut().unwrap().buffer_level().0 as f32 / audio_output.as_mut().unwrap().buffer_level().1 as f32) * 100.0);
+            //info!("buffer {:0.0}%", (audio_output.as_mut().unwrap().buffer_level().0 as f32 / audio_output.as_mut().unwrap().buffer_level().1 as f32) * 100.0);
         }
 
         // Prevent this from hogging a core

@@ -16,6 +16,7 @@ pub struct Resampler {
     interleaved: Vec<f32>,
     duration: usize,
     channels: usize,
+    in_rate: usize,
 }
 
 impl Resampler {
@@ -73,10 +74,19 @@ impl Resampler {
         */
 
         let output = rubato::Resampler::output_buffer_allocate(&resampler, true);
+        dbg!(output[0].len());
 
         let input = vec![Vec::with_capacity(duration); channels];
 
-        Self { resampler, input, output, duration, interleaved: Default::default(), channels }
+        Self {
+            resampler,
+            input,
+            output,
+            duration,
+            interleaved: Vec::new(),
+            channels,
+            in_rate: spec.rate as usize,
+        }
     }
 
     /// Resamples a planar/non-interleaved input.
@@ -118,5 +128,9 @@ impl Resampler {
         }
 
         Some(self.resample_inner())
+    }
+
+    pub fn in_rate(&self) -> usize {
+        self.in_rate
     }
 }

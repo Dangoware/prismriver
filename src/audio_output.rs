@@ -1,7 +1,10 @@
-use cpal::{traits::{DeviceTrait, StreamTrait}, Sample as _, StreamConfig};
+use std::ops::Mul;
+
+use cpal::{traits::{DeviceTrait as _, StreamTrait}, Stream, StreamConfig};
 use log::{error, info, warn};
 use rb::{RbConsumer as _, RbInspector, RbProducer as _, RB as _};
-use crate::{resampler::Resampler, BUFFER_MAX};
+use samplerate::Samplerate;
+use crate::BUFFER_MAX;
 use symphonia::core::{audio::SignalSpec, sample::Sample};
 
 #[allow(dead_code)]
@@ -41,7 +44,7 @@ pub trait AudioOutput {
     /// Get the volume (amplitude) of the output
     fn volume(&self) -> Volume;
 
-    fn update_signalspec(&mut self, spec: SignalSpec);
+    fn update_signalspec(&mut self, spec: SignalSpec, duration: u64);
 
     fn buffer_level(&self) -> (usize, usize);
     fn buffer_healthy(&self) -> usize;
@@ -50,34 +53,47 @@ pub trait AudioOutput {
 pub struct AudioOutputInner {
     ring_buf: rb::SpscRb<f32>,
     ring_buf_producer: rb::Producer<f32>,
-    stream: cpal::Stream,
-    resampler: Option<crate::resampler::Resampler>,
-    stream_config: StreamConfig,
+    resampler: Option<samplerate::Samplerate>,
     volume: Volume,
     channels: usize,
     state: bool,
 
+    output_stream: Stream,
+    output_params: StreamConfig,
+
     scratch_buffer: Vec<f32>,
 }
+
+const OUTPUT_RATE_HZ: usize = 44100;
+const OUTPUT_COUNT: usize = OUTPUT_RATE_HZ / 100;
 
 impl AudioOutputInner {
     fn new(
         device: &cpal::Device,
     ) -> Self {
-        // Set up CPAL stuff
-        let config = device
-            .default_output_config()
-            .expect("Failed to get the default output config.")
-            .config();
+        let output_params = if cfg!(not(target_os = "windows")) {
+            cpal::StreamConfig {
+                channels: 2,
+                sample_rate: cpal::SampleRate(44100),
+                buffer_size: cpal::BufferSize::Default,
+            }
+        }
+        else {
+            // Use the default config for Windows.
+            device
+                .default_output_config()
+                .expect("Failed to get the default output config.")
+                .config()
+        };
 
         // Create a ring buffer with a capacity for up-to 200ms of audio.
-        let ring_len = ((200 * config.sample_rate.0 as usize) / 1000) * config.channels as usize;
+        let ring_len = ((200 * output_params.sample_rate.0 as usize) / 1000) * output_params.channels as usize;
 
         let ring_buf = rb::SpscRb::new(ring_len);
         let (ring_buf_producer, ring_buf_consumer) = (ring_buf.producer(), ring_buf.consumer());
 
-        let stream_result = device.build_output_stream(
-            &config,
+        let output_stream = device.build_output_stream(
+            &output_params,
             move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                 // Write out as many samples as possible from the ring buffer to the audio
                 // output.
@@ -86,18 +102,20 @@ impl AudioOutputInner {
                 // Mute any remaining samples.
                 data[written..].iter_mut().for_each(|s| *s = f32::MID);
             },
-            move |err| error!("audio output error: {}", err), None,
+            move |err| error!("audio output error: {}", err),
+            None,
         ).unwrap();
 
         Self {
             ring_buf,
             ring_buf_producer,
-            stream: stream_result,
-            stream_config: config,
             resampler: None,
             volume: Volume::default(),
             channels: 2,
             state: false,
+
+            output_stream,
+            output_params,
 
             scratch_buffer: vec![0f32; BUFFER_MAX as usize],
         }
@@ -113,34 +131,34 @@ impl AudioOutput for AudioOutputInner {
         }
 
         if !self.state {
-            self.stream.play().unwrap();
+            self.output_stream.play().unwrap();
             self.state = true
+        }
+
+        // Interleave samples
+        let mut interleaved = vec![0.; (decoded.len() / self.channels) * 2];
+        for (i, frame) in interleaved.chunks_exact_mut(2).enumerate() {
+            for (ch, s) in frame.iter_mut().enumerate() {
+                *s = match decoded.get((ch * decoded.len() / self.channels) + i) {
+                    Some(s) => *s,
+                    None => decoded[i],
+                }
+            }
         }
 
         let samples = if let Some(resampler) = &mut self.resampler {
             // Resampling is required. The resampler will return interleaved samples in the
             // correct sample format.
-            match resampler.resample(decoded) {
-                Some(resampled) => resampled,
-                None => return Ok(()),
+            match resampler.process(&interleaved) {
+                Ok(resampled) => resampled,
+                Err(_) => return Ok(()),
             }
         } else {
-            decoded
+            interleaved.to_vec()
         };
 
-        // Interleave samples
-        let mut interleaved = vec![0.; (samples.len() / self.channels) * 2];
-        for (i, frame) in interleaved.chunks_exact_mut(2).enumerate() {
-            for (ch, s) in frame.iter_mut().enumerate() {
-                *s = match samples.get((ch * samples.len() / self.channels) + i) {
-                    Some(s) => *s,
-                    None => samples[i],
-                }
-            }
-        }
-
         // Set the sample amplitude (volume) for every sample
-        let mut test: Vec<f32> = interleaved.iter().map(|s| s.mul_amp(self.volume.as_f32().to_sample())).collect();
+        let mut test: Vec<f32> = samples.iter().map(|s| s.mul(self.volume.as_f32())).collect();
 
         //info!("{} samples to a buffer with a capacity for {}", samples.len(), self.ring_buf.capacity());
 
@@ -156,15 +174,14 @@ impl AudioOutput for AudioOutputInner {
         // If there is a resampler, then it may need to be flushed
         // depending on the number of samples it has.
         if let Some(resampler) = &mut self.resampler {
-            let mut remaining_samples = resampler.flush().unwrap_or_default();
+            let mut remaining_samples = resampler.process_last(&[]).unwrap_or_default();
 
             while let Some(written) = self.ring_buf_producer.write_blocking(&remaining_samples) {
-                remaining_samples = &remaining_samples[written..];
+                remaining_samples = remaining_samples[written..].to_vec();
             }
         }
 
         // Flush is best-effort, ignore the returned result.
-        let _ = self.stream.pause();
         self.state = false;
     }
 
@@ -176,22 +193,24 @@ impl AudioOutput for AudioOutputInner {
         self.volume
     }
 
-    fn update_signalspec(&mut self, spec: SignalSpec) {
+    fn update_signalspec(&mut self, spec: SignalSpec, duration: u64) {
         // If the sample rate is not equal to the output sample rate,
         // create a resampler to correct it
-        if spec.rate != self.stream_config.sample_rate.0 {
+        if spec.rate != self.output_params.sample_rate.0 {
             info!(
-                "resampling {} Hz to {} Hz, buffer size of {} bytes",
+                "resampling {} Hz to {} Hz ({:0.4}), buffer size of {} bytes",
                 spec.rate,
-                self.stream_config.sample_rate.0,
-                16384
+                self.output_params.sample_rate.0,
+                spec.rate as f64 / self.output_params.sample_rate.0 as f64,
+                duration,
             );
 
-            self.resampler = Some(Resampler::new(
-                spec,
-                self.stream_config.sample_rate.0 as usize,
-                16384, // TODO: Maybe figure out a better way than hardcoding this?
-            ));
+            self.resampler = Some(Samplerate::new(
+                samplerate::ConverterType::SincMediumQuality,
+                spec.rate,
+                self.output_params.sample_rate.0,
+                2,
+            ).unwrap());
         } else {
             self.resampler = None;
         };
@@ -204,7 +223,7 @@ impl AudioOutput for AudioOutputInner {
     }
 
     fn buffer_healthy(&self) -> usize {
-        self.ring_buf.capacity() - (self.ring_buf.capacity() / 2)
+        self.ring_buf.capacity() - (self.ring_buf.capacity() / 3)
     }
 }
 
