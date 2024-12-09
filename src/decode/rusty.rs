@@ -2,50 +2,20 @@ use std::time::Duration;
 
 use log::warn;
 use symphonia::core::{audio::{SampleBuffer, SignalSpec}, codecs::{CodecParameters, DecoderOptions, CODEC_TYPE_NULL}, formats::{FormatOptions, FormatReader, SeekMode, SeekTo}, io::MediaSourceStream, meta::MetadataOptions, probe::Hint, units::Time};
-use thiserror::Error;
 
-#[derive(Error, Debug)]
-pub enum DecoderError {
-    #[error("Internal decoder error {}", 0)]
-    InternalError(String),
+use super::{Decoder, DecoderError, StreamParams};
 
-    #[error("Failed to decode packet")]
-    DecodeFailed,
-
-    #[error("End of stream")]
-    EndOfStream,
-
-    #[error("No timebase, cannot calculate time")]
-    NoTimebase,
-}
-
-pub trait Decoder {
-    fn new(input: MediaSourceStream) -> Result<Self, DecoderError> where Self: Sized;
-
-    fn seek(&mut self, pos: Duration) -> Result<(), DecoderError>;
-
-    fn position(&self) -> Result<Duration, DecoderError>;
-    fn duration(&self) -> Result<Duration, DecoderError>;
-
-    /// Write the decoder's audio bytes into the provided buffer, and return the
-    /// number of bytes written
-    fn next_packet_to_buf(&mut self, buf: &mut [f32]) -> Result<usize, DecoderError>;
-
-    fn spec(&self) -> SignalSpec;
-    fn max_packet_size(&self) -> u64;
-}
-
-pub struct SymphoniaDecoder {
+pub struct RustyDecoder {
     format_reader: Box<dyn FormatReader>,
-    decoder: Box<dyn symphonia::core::codecs::Decoder>,
-    sample_buf: Option<SampleBuffer<f32>>,
-    track_id: u32,
-    params: CodecParameters,
-    timestamp: u64,
-    spec: SignalSpec,
+        decoder: Box<dyn symphonia::core::codecs::Decoder>,
+        sample_buf: Option<SampleBuffer<f32>>,
+        track_id: u32,
+        params: CodecParameters,
+        timestamp: u64,
+        spec: SignalSpec,
 }
 
-impl Decoder for SymphoniaDecoder {
+impl Decoder for RustyDecoder {
     fn new(input: MediaSourceStream) -> Result<Self, DecoderError> {
         let meta_opts: MetadataOptions = Default::default();
         let fmt_opts: FormatOptions = FormatOptions {
@@ -54,20 +24,20 @@ impl Decoder for SymphoniaDecoder {
         };
 
         let probed = symphonia::default::get_probe()
-            .format(&Hint::new(), input, &fmt_opts, &meta_opts)
-            .map_err(|e| DecoderError::InternalError(e.to_string()))?;
+        .format(&Hint::new(), input, &fmt_opts, &meta_opts)
+        .map_err(|e| DecoderError::InternalError(e.to_string()))?;
         let format_reader = probed.format;
 
         let track = format_reader
-            .tracks()
-            .iter()
-            .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
-            .expect("no supported audio tracks");
+        .tracks()
+        .iter()
+        .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
+        .expect("no supported audio tracks");
 
         let dec_opts: DecoderOptions = Default::default();
         let decoder = symphonia::default::get_codecs()
-            .make(&track.codec_params, &dec_opts)
-            .expect("unsupported codec");
+        .make(&track.codec_params, &dec_opts)
+        .expect("unsupported codec");
 
         if decoder.codec_params().channels.unwrap_or_default().count() < 2 {
             warn!("mono audio will be sent in stereo to both left and right");
@@ -79,14 +49,14 @@ impl Decoder for SymphoniaDecoder {
         Ok(Self {
             spec: SignalSpec::new(
                 decoder.codec_params().sample_rate.unwrap(),
-                decoder.codec_params().channels.unwrap()
+                                  decoder.codec_params().channels.unwrap()
             ),
             params,
             format_reader,
-            decoder,
-            track_id,
-            timestamp: 0,
-            sample_buf: None,
+                decoder,
+                track_id,
+                timestamp: 0,
+                sample_buf: None,
         })
     }
 
@@ -95,7 +65,7 @@ impl Decoder for SymphoniaDecoder {
             SeekMode::Accurate,
             SeekTo::Time {
                 time: Time::from(pos),
-                track_id: Some(self.track_id),
+                                                       track_id: Some(self.track_id),
             }
         ) {
             Ok(ts) => ts.actual_ts,
@@ -195,11 +165,11 @@ impl Decoder for SymphoniaDecoder {
         Ok(offset)
     }
 
-    fn spec(&self) -> SignalSpec {
-        self.spec
-    }
-
-    fn max_packet_size(&self) -> u64 {
-        self.params.max_frames_per_packet.unwrap_or(4096)
+    fn params(&self) -> StreamParams {
+        StreamParams {
+            rate: self.spec.rate,
+            channels: self.spec.channels.count() as u16,
+            packet_size: self.params.max_frames_per_packet.unwrap_or(4096),
+        }
     }
 }

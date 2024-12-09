@@ -4,7 +4,9 @@ use cpal::{traits::{DeviceTrait as _, StreamTrait}, Stream, StreamConfig};
 use log::{error, info, warn};
 use rb::{RbConsumer as _, RbInspector, RbProducer as _, RB as _};
 use samplerate::{ConverterType, Samplerate};
-use symphonia::core::{audio::SignalSpec, sample::Sample};
+use symphonia::core::sample::Sample;
+
+use crate::decode::StreamParams;
 
 #[allow(dead_code)]
 #[allow(clippy::enum_variant_names)]
@@ -43,7 +45,7 @@ pub trait AudioOutput {
     /// Get the volume (amplitude) of the output
     fn volume(&self) -> Volume;
 
-    fn update_signalspec(&mut self, spec: SignalSpec, duration: u64);
+    fn update_params(&mut self, params: StreamParams);
 
     fn buffer_level(&self) -> (usize, usize);
     fn buffer_healthy(&self) -> usize;
@@ -61,8 +63,8 @@ pub struct AudioOutputInner {
     output_params: StreamConfig,
 }
 
-const OUTPUT_RATE_HZ: u32 = 44100;
-const OUTPUT_BUFFER_SIZE: u32 = OUTPUT_RATE_HZ / 100;
+const OUTPUT_RATE_HZ: u32 = 44_100;
+//const OUTPUT_BUFFER_SIZE: u32 = OUTPUT_RATE_HZ / 100;
 const CHANNELS_OUT: u16 = 2;
 
 impl AudioOutputInner {
@@ -183,17 +185,17 @@ impl AudioOutput for AudioOutputInner {
         self.volume
     }
 
-    fn update_signalspec(&mut self, spec: SignalSpec, duration: u64) {
+    fn update_params(&mut self, params: StreamParams) {
         // If the sample rate is not equal to the output sample rate,
         // create a resampler to correct it
-        if spec.rate != self.output_params.sample_rate.0 {
-            let resample_ratio = spec.rate as f64 / self.output_params.sample_rate.0 as f64;
+        if params.rate != self.output_params.sample_rate.0 {
+            let resample_ratio = params.rate as f64 / self.output_params.sample_rate.0 as f64;
             info!(
                 "resampling {} Hz to {} Hz ({:0.4}), buffer size of {} bytes",
-                spec.rate,
+                params.rate,
                 self.output_params.sample_rate.0,
                 resample_ratio,
-                duration,
+                params.packet_size,
             );
 
             // Chose samplerate conversion based on how extreme the sample ratio is
@@ -208,7 +210,7 @@ impl AudioOutput for AudioOutputInner {
 
             self.resampler = Some(Samplerate::new(
                 converter,
-                spec.rate,
+                params.rate,
                 self.output_params.sample_rate.0,
                 2,
             ).unwrap());
@@ -216,7 +218,7 @@ impl AudioOutput for AudioOutputInner {
             self.resampler = None;
         };
 
-        self.channels = spec.channels.count() as u16
+        self.channels = params.channels
     }
 
     fn buffer_level(&self) -> (usize, usize) {
