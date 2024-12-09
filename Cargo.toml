@@ -15,3 +15,4 @@ reqwest = { version = "0.12.9", features = ["blocking"] }
 rubato = "0.16.1"
 symphonia = { version = "0.5.4", features = ["all-codecs", "opt-simd"] }
 thiserror = "1.0.64"
+tinyaudio = "1.0.0"

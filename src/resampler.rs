@@ -41,15 +41,8 @@ impl Resampler {
             channel.drain(0..self.duration);
         }
 
-        // Interleave the planar samples from Rubato.
-        let num_channels = 2;
-
-        self.interleaved.resize(num_channels * self.output[0].len(), 0.0);
-        for (i, frame) in self.interleaved.chunks_exact_mut(num_channels).enumerate() {
-            for (ch, s) in frame.iter_mut().enumerate() {
-                *s = self.output[ch][i].into_sample();
-            }
-        }
+        self.interleaved.clear();
+        self.interleaved.extend(self.output.iter().flatten().cloned());
 
         &self.interleaved
     }

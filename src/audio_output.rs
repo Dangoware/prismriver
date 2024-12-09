@@ -1,7 +1,7 @@
 use cpal::{traits::{DeviceTrait, StreamTrait}, Sample as _, StreamConfig};
 use log::{error, info, warn};
 use rb::{RbConsumer as _, RbInspector, RbProducer as _, RB as _};
-use crate::resampler::Resampler;
+use crate::{resampler::Resampler, BUFFER_MAX};
 use symphonia::core::{audio::SignalSpec, sample::Sample};
 
 #[allow(dead_code)]
@@ -56,6 +56,8 @@ pub struct AudioOutputInner {
     volume: Volume,
     channels: usize,
     state: bool,
+
+    scratch_buffer: Vec<f32>,
 }
 
 impl AudioOutputInner {
@@ -96,6 +98,8 @@ impl AudioOutputInner {
             volume: Volume::default(),
             channels: 2,
             state: false,
+
+            scratch_buffer: vec![0f32; BUFFER_MAX as usize],
         }
     }
 }
@@ -113,29 +117,30 @@ impl AudioOutput for AudioOutputInner {
             self.state = true
         }
 
-        let samples: Vec<f32> = if let Some(resampler) = &mut self.resampler {
+        let samples = if let Some(resampler) = &mut self.resampler {
             // Resampling is required. The resampler will return interleaved samples in the
             // correct sample format.
             match resampler.resample(decoded) {
-                Some(resampled) => resampled.to_vec(),
+                Some(resampled) => resampled,
                 None => return Ok(()),
             }
         } else {
-            // Interleave samples
-            let mut interleaved = vec![0.; (decoded.len() / self.channels) * 2];
-            for (i, frame) in interleaved.chunks_exact_mut(2).enumerate() {
-                for (ch, s) in frame.iter_mut().enumerate() {
-                    *s = match decoded.get((ch * decoded.len() / self.channels) + i) {
-                        Some(s) => *s,
-                        None => decoded[i],
-                    }
-                }
-            }
-            interleaved
+            decoded
         };
 
+        // Interleave samples
+        let mut interleaved = vec![0.; (samples.len() / self.channels) * 2];
+        for (i, frame) in interleaved.chunks_exact_mut(2).enumerate() {
+            for (ch, s) in frame.iter_mut().enumerate() {
+                *s = match samples.get((ch * samples.len() / self.channels) + i) {
+                    Some(s) => *s,
+                    None => samples[i],
+                }
+            }
+        }
+
         // Set the sample amplitude (volume) for every sample
-        let mut test: Vec<f32> = samples.iter().map(|s| s.mul_amp(self.volume.as_f32().to_sample())).collect();
+        let mut test: Vec<f32> = interleaved.iter().map(|s| s.mul_amp(self.volume.as_f32().to_sample())).collect();
 
         //info!("{} samples to a buffer with a capacity for {}", samples.len(), self.ring_buf.capacity());
 
@@ -151,10 +156,10 @@ impl AudioOutput for AudioOutputInner {
         // If there is a resampler, then it may need to be flushed
         // depending on the number of samples it has.
         if let Some(resampler) = &mut self.resampler {
-            let mut remaining_samples: Vec<_> = resampler.flush().unwrap_or_default().iter().map(|s| s.to_sample()).collect();
+            let mut remaining_samples = resampler.flush().unwrap_or_default();
 
             while let Some(written) = self.ring_buf_producer.write_blocking(&remaining_samples) {
-                remaining_samples = remaining_samples[written..].to_vec();
+                remaining_samples = &remaining_samples[written..];
             }
         }
 
