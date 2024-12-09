@@ -4,7 +4,6 @@ use cpal::{traits::{DeviceTrait as _, StreamTrait}, Stream, StreamConfig};
 use log::{error, info, warn};
 use rb::{RbConsumer as _, RbInspector, RbProducer as _, RB as _};
 use samplerate::{ConverterType, Samplerate};
-use crate::BUFFER_MAX;
 use symphonia::core::{audio::SignalSpec, sample::Sample};
 
 #[allow(dead_code)]
@@ -205,7 +204,7 @@ impl AudioOutput for AudioOutputInner {
                 r if r <= 4.0 => ConverterType::SincFastest,
                 _ => ConverterType::Linear,
             };
-            info!("chose {:?} due to sample ratio of {:0.4}", converter, resample_ratio);
+            info!("chose {} for sample rate conversion", converter.name());
 
             self.resampler = Some(Samplerate::new(
                 converter,

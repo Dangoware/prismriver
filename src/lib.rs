@@ -306,8 +306,8 @@ fn player_loop(
                 };
                 audio_output.as_mut().unwrap().write(&output_buffer[0..len]).unwrap();
             }
-            *duration.write().unwrap() = Some(decoder.as_mut().unwrap().duration().unwrap());
-            *position.write().unwrap() = Some(decoder.as_mut().unwrap().position().unwrap());
+            *duration.write().unwrap() = decoder.as_mut().unwrap().duration().ok();
+            *position.write().unwrap() = decoder.as_mut().unwrap().position().ok();
             //info!("buffer {:0.0}%", (audio_output.as_mut().unwrap().buffer_level().0 as f32 / audio_output.as_mut().unwrap().buffer_level().1 as f32) * 100.0);
         }
 
