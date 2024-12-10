@@ -4,8 +4,10 @@ use thiserror::Error;
 // Mods and stuff -----------
 // --------------------------
 mod rusty;
+mod ffmpeg;
 
 pub use rusty::RustyDecoder;
+pub use ffmpeg::FfmpegDecoder;
 
 #[derive(Error, Debug)]
 pub enum DecoderError {
@@ -34,8 +36,8 @@ pub trait Decoder {
 
     fn seek(&mut self, pos: Duration) -> Result<(), DecoderError>;
 
-    fn position(&self) -> Result<Duration, DecoderError>;
-    fn duration(&self) -> Result<Duration, DecoderError>;
+    fn position(&self) -> Option<Duration>;
+    fn duration(&self) -> Option<Duration>;
 
     /// Write the decoder's audio bytes into the provided buffer, and return the
     /// number of bytes written

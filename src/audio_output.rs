@@ -141,22 +141,22 @@ impl AudioOutput for AudioOutputInner {
         }
 
         // Interleave samples
-        let interleaved = interleave(decoded, self.channels);
+        let decoded = interleave(decoded, self.channels);
 
         // Resample if resampler exists
         let processed_samples = if let Some(resampler) = &mut self.resampler {
-            match resampler.process(&interleaved) {
+            match resampler.process(&decoded) {
                 Ok(resampled) => resampled,
                 Err(_) => return Ok(()),
             }
         } else {
-            interleaved.to_vec()
+            decoded.to_vec()
         };
 
         // Set the sample amplitude (volume) for every sample
         let amplified_samples: Vec<f32> = processed_samples.iter().map(|s| s.mul(self.volume.as_f32())).collect();
 
-        //info!("{} samples to a buffer with a capacity for {}", samples.len(), self.ring_buf.capacity());
+        //info!("{} samples to a buffer with a capacity for {}", amplified_samples.len(), self.ring_buf.capacity());
 
         // Write all samples to the ring buffer.
         let mut offset = 0;

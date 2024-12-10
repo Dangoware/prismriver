@@ -1,12 +1,12 @@
 mod audio_output;
 mod decode;
 
-use std::{fs::File, sync::{Arc, RwLock}, thread, time::{Duration, Instant}};
+use std::{fs::File, path::PathBuf, sync::{Arc, RwLock}, thread, time::{Duration, Instant}};
 
 pub use audio_output::{AudioOutput, Volume};
 use cpal::{traits::HostTrait as _, Device};
 use crossbeam::channel::{self, Receiver, Sender};
-use decode::{Decoder, RustyDecoder};
+use decode::{Decoder, FfmpegDecoder, RustyDecoder};
 use log::{info, warn};
 use symphonia::core::io::{MediaSourceStream, MediaSourceStreamOptions};
 use thiserror::Error;
@@ -27,9 +27,9 @@ pub enum InternalMessage {
     Seek(Duration),
 
     /// Set up the thread with a new stream
-    LoadNew(MediaSourceStream),
+    LoadNew(PathBuf),
 
-    LoadNext(MediaSourceStream),
+    LoadNext(PathBuf),
 
     /// Give the thread a new output device
     NewOutputDevice(Device),
@@ -118,25 +118,18 @@ impl Prismriver {
     /// This immediately overrides the previous one, flushing the buffer.
     #[must_use]
     pub fn load_new(&mut self, uri: &str) -> Result<(), PrismError> {
-        let file = File::open(uri).unwrap();
-        let mss = MediaSourceStream::new(Box::new(file), MediaSourceStreamOptions::default());
+        let path = PathBuf::from(uri);
+        path.canonicalize().unwrap();
 
-        self.uri_current = Some(uri.to_string());
-
-        self.send_recv(InternalMessage::LoadNew(mss))
+        self.send_recv(InternalMessage::LoadNew(path))
     }
 
     /// Set a new stream to be played after the current one ends.
     ///
     /// This allows for gapless transitions.
     #[must_use]
-    pub fn load_next(&mut self, uri: &str) -> Result<(), PrismError> {
-        let file = File::open(uri).unwrap();
-        let mss = MediaSourceStream::new(Box::new(file), MediaSourceStreamOptions::default());
-
-        self.uri_next = Some(uri.to_string());
-
-        self.send_recv(InternalMessage::LoadNext(mss))
+    pub fn load_next(&mut self, _uri: &str) -> Result<(), PrismError> {
+        todo!()
     }
 
     /// Get the volume
@@ -187,7 +180,7 @@ struct PlayerState {
     decoder: Option<Box<dyn Decoder>>,
     volume: Volume,
 
-    next_source: Option<MediaSourceStream>,
+    next_source: Option<PathBuf>,
     stream_params: Option<decode::StreamParams>,
 
     internal_recv: Receiver<InternalMessage>,
@@ -239,13 +232,21 @@ fn player_loop(
 
                     // TODO: Make this detect format and use the appropriate
                     // decoder
-                    p_state.decoder = match RustyDecoder::new(f) {
+                    p_state.decoder = match FfmpegDecoder::new(f) {
                         Ok(d) => Some(Box::new(d)),
                         Err(e) => {
                             let _ = p_state.internal_send.try_send(Err(PrismError::DecoderError(e)));
                             continue;
                         },
                     };
+
+                    /*match RustyDecoder::new(f) {
+                        Ok(d) => Some(Box::new(d)),
+                        Err(e) => {
+                            let _ = p_state.internal_send.try_send(Err(PrismError::DecoderError(e)));
+                            continue;
+                        },
+                    };*/
 
                     p_state.stream_params = Some(p_state.decoder.as_ref().unwrap().params());
                     p_state.audio_output.as_mut().unwrap().update_params(p_state.stream_params.unwrap());
@@ -326,8 +327,8 @@ fn player_loop(
                 };
                 p_state.audio_output.as_mut().unwrap().write(&output_buffer[0..len]).unwrap();
             }
-            *p_state.duration.write().unwrap() = p_state.decoder.as_mut().unwrap().duration().ok();
-            *p_state.position.write().unwrap() = p_state.decoder.as_mut().unwrap().position().ok();
+            *p_state.duration.write().unwrap() = p_state.decoder.as_mut().unwrap().duration();
+            *p_state.position.write().unwrap() = p_state.decoder.as_mut().unwrap().position();
             //info!("buffer {:0.0}%", (audio_output.as_mut().unwrap().buffer_level().0 as f32 / audio_output.as_mut().unwrap().buffer_level().1 as f32) * 100.0);
         }
 

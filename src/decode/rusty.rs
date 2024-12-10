@@ -86,24 +86,24 @@ impl Decoder for RustyDecoder {
         Ok(())
     }
 
-    fn position(&self) -> Result<Duration, DecoderError> {
+    fn position(&self) -> Option<Duration> {
         if let Some(t) = self.params.time_base {
-            Ok(t.calc_time(self.timestamp).into())
+            Some(t.calc_time(self.timestamp).into())
         } else {
-            Err(DecoderError::NoTimebase)
+            None
         }
     }
 
-    fn duration(&self) -> Result<Duration, DecoderError> {
+    fn duration(&self) -> Option<Duration> {
         let dur = self.params.n_frames.map(|frames| self.params.start_ts + frames);
         if let Some(t) = self.params.time_base {
             if let Some(d) = dur {
-                Ok(t.calc_time(d).into())
+                Some(t.calc_time(d).into())
             } else {
-                Err(DecoderError::NoTimebase)
+                None
             }
         } else {
-            Err(DecoderError::NoTimebase)
+            None
         }
     }
 
