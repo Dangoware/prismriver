@@ -1,11 +1,11 @@
+use std::time::Duration;
+use thiserror::Error;
+
+// Mods and stuff -----------
+// --------------------------
 mod rusty;
 
 pub use rusty::RustyDecoder;
-
-use std::time::Duration;
-
-use symphonia::core::io::MediaSourceStream;
-use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum DecoderError {
@@ -30,7 +30,7 @@ pub struct StreamParams {
 }
 
 pub trait Decoder {
-    fn new(input: MediaSourceStream) -> Result<Self, DecoderError> where Self: Sized;
+    //fn new(input: MediaSourceStream) -> Result<Self, DecoderError> where Self: Sized;
 
     fn seek(&mut self, pos: Duration) -> Result<(), DecoderError>;
 

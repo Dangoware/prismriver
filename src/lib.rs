@@ -56,7 +56,7 @@ pub enum PrismError {
     NothingLoaded,
 }
 
-pub struct PrismRiver {
+pub struct Prismriver {
     volume: Volume,
 
     state: Arc<RwLock<State>>,
@@ -70,8 +70,8 @@ pub struct PrismRiver {
     uri_next: Option<String>,
 }
 
-impl PrismRiver {
-    pub fn new() -> PrismRiver {
+impl Prismriver {
+    pub fn new() -> Prismriver {
         let host = cpal::default_host();
         let device = host.default_output_device().expect("no output device available");
 
@@ -171,7 +171,7 @@ impl PrismRiver {
     }
 }
 
-impl Drop for PrismRiver {
+impl Drop for Prismriver {
     fn drop(&mut self) {
         let _ = self.internal_send.try_send(InternalMessage::Destroy);
     }
@@ -237,6 +237,8 @@ fn player_loop(
                         panic!("This shouldn't be possible!")
                     }
 
+                    // TODO: Make this detect format and use the appropriate
+                    // decoder
                     p_state.decoder = match RustyDecoder::new(f) {
                         Ok(d) => Some(Box::new(d)),
                         Err(e) => {

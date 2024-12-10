@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use log::warn;
-use symphonia::core::{audio::{SampleBuffer, SignalSpec}, codecs::{CodecParameters, DecoderOptions, CODEC_TYPE_NULL}, formats::{FormatOptions, FormatReader, SeekMode, SeekTo}, io::MediaSourceStream, meta::MetadataOptions, probe::Hint, units::Time};
+use symphonia::core::{audio::{SampleBuffer, SignalSpec}, codecs::{CodecParameters, DecoderOptions, CODEC_TYPE_NULL}, formats::{FormatOptions, FormatReader, SeekMode, SeekTo}, io::MediaSourceStream, meta::{MetadataOptions, StandardTagKey}, probe::Hint, units::Time};
 
 use super::{Decoder, DecoderError, StreamParams};
 
@@ -15,24 +15,31 @@ pub struct RustyDecoder {
         spec: SignalSpec,
 }
 
-impl Decoder for RustyDecoder {
-    fn new(input: MediaSourceStream) -> Result<Self, DecoderError> {
+impl RustyDecoder {
+    pub fn new(input: MediaSourceStream) -> Result<Self, DecoderError> {
         let meta_opts: MetadataOptions = Default::default();
         let fmt_opts: FormatOptions = FormatOptions {
             enable_gapless: true,
             ..Default::default()
         };
 
-        let probed = symphonia::default::get_probe()
-        .format(&Hint::new(), input, &fmt_opts, &meta_opts)
-        .map_err(|e| DecoderError::InternalError(e.to_string()))?;
+        let mut probed = symphonia::default::get_probe()
+            .format(&Hint::new(), input, &fmt_opts, &meta_opts)
+            .map_err(|e| DecoderError::InternalError(e.to_string()))?;
+
+        if let Some(mut m) = probed.metadata.get() {
+            if let Some(rev) = m.skip_to_latest() {
+                let title = rev.tags().iter().find(|r| r.std_key == Some(StandardTagKey::TrackTitle));
+                dbg!(&title.unwrap().value.to_string());
+            }
+        }
         let format_reader = probed.format;
 
         let track = format_reader
-        .tracks()
-        .iter()
-        .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
-        .expect("no supported audio tracks");
+            .tracks()
+            .iter()
+            .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
+            .expect("no supported audio tracks");
 
         let dec_opts: DecoderOptions = Default::default();
         let decoder = symphonia::default::get_codecs()
@@ -59,7 +66,9 @@ impl Decoder for RustyDecoder {
                 sample_buf: None,
         })
     }
+}
 
+impl Decoder for RustyDecoder {
     fn seek(&mut self, pos: Duration) -> Result<(), DecoderError> {
         self.timestamp = match self.format_reader.seek(
             SeekMode::Accurate,
@@ -118,8 +127,11 @@ impl Decoder for RustyDecoder {
             // Consume any new metadata that has been read since the last packet.
             while !self.format_reader.metadata().is_latest() {
                 // Pop the old head of the metadata queue.
-                let metadata = self.format_reader.metadata().pop();
-                dbg!(metadata);
+                self.format_reader.metadata().pop();
+
+                if let Some(rev) = self.format_reader.metadata().current() {
+                    dbg!(rev);
+                }
             }
 
             // If the packet does not belong to the selected track, skip over it.

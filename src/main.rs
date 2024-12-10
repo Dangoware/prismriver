@@ -3,11 +3,11 @@ use std::{thread::sleep, time::Duration};
 
 use prismriver::State;
 use prismriver::Volume;
-use prismriver::PrismRiver;
+use prismriver::Prismriver;
 
 fn main() {
     colog::init();
-    let mut player = PrismRiver::new();
+    let mut player = Prismriver::new();
     player.set_volume(Volume::new(0.4));
 
     let args: Vec<String> = std::env::args().skip(1).collect();

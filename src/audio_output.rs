@@ -32,6 +32,21 @@ pub fn open_output(device: &cpal::Device) -> Result<Box<dyn AudioOutput>, AudioO
     Ok(Box::new(AudioOutputInner::new(&device)))
 }
 
+pub fn interleave(planar: &[f32], channels: u16) -> Vec<f32> {
+    let mut interleaved = vec![0.; (planar.len() / channels as usize) * 2];
+    for (i, frame) in interleaved.chunks_exact_mut(2).enumerate() {
+        for (ch, s) in frame.iter_mut().enumerate() {
+            *s = match planar.get((ch * planar.len() / channels as usize) + i) {
+                Some(s) => *s,
+                None => {
+                    planar[i]
+                },
+            }
+        }
+    }
+    interleaved
+}
+
 pub trait AudioOutput {
     /// Write some samples into the buffer to be played
     fn write(&mut self, decoded: &[f32]) -> Result<(), ()>;
@@ -120,27 +135,16 @@ impl AudioOutput for AudioOutputInner {
         }
 
         if !self.state {
+            // If the stream isn't playing, do that
             self.output_stream.play().unwrap();
             self.state = true
         }
 
         // Interleave samples
-        let mut interleaved = vec![0.; (decoded.len() / self.channels as usize) * 2];
-        for (i, frame) in interleaved.chunks_exact_mut(2).enumerate() {
-            for (ch, s) in frame.iter_mut().enumerate() {
-                *s = match decoded.get((ch * decoded.len() / self.channels as usize) + i) {
-                    Some(s) => *s,
-                    None => {
-                        decoded[i]
-                    },
-                }
-            }
-        }
+        let interleaved = interleave(decoded, self.channels);
 
-
-        let samples = if let Some(resampler) = &mut self.resampler {
-            // Resampling is required. The resampler will return interleaved samples in the
-            // correct sample format.
+        // Resample if resampler exists
+        let processed_samples = if let Some(resampler) = &mut self.resampler {
             match resampler.process(&interleaved) {
                 Ok(resampled) => resampled,
                 Err(_) => return Ok(()),
@@ -150,13 +154,14 @@ impl AudioOutput for AudioOutputInner {
         };
 
         // Set the sample amplitude (volume) for every sample
-        let mut test: Vec<f32> = samples.iter().map(|s| s.mul(self.volume.as_f32())).collect();
+        let amplified_samples: Vec<f32> = processed_samples.iter().map(|s| s.mul(self.volume.as_f32())).collect();
 
         //info!("{} samples to a buffer with a capacity for {}", samples.len(), self.ring_buf.capacity());
 
         // Write all samples to the ring buffer.
-        while let Some(written) = self.ring_buf_producer.write_blocking(&test) {
-            test = test[written..].to_vec();
+        let mut offset = 0;
+        while let Some(written) = self.ring_buf_producer.write_blocking(&amplified_samples[offset..]) {
+            offset += written;
         }
 
         Ok(())
