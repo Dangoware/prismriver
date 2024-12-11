@@ -17,6 +17,7 @@ fn main() {
         player.load_new(&path).unwrap();
         player.set_state(State::Playing);
         println!("Playing!");
+
         while player.state() == State::Playing {
             sleep(Duration::from_millis(100));
             print_timer(player.position().unwrap_or_default(), player.duration());

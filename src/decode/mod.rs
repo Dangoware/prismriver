@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use thiserror::Error;
 
 // Mods and stuff -----------
@@ -36,21 +36,29 @@ pub struct StreamParams {
 }
 
 pub trait Decoder {
-    //fn new(input: MediaSourceStream) -> Result<Self, DecoderError> where Self: Sized;
+    /// Write the decoder's audio bytes into the provided buffer, and return the
+    /// number of bytes written
+    fn next_packet_to_buf(&mut self, buf: &mut [f32]) -> Result<usize, DecoderError>;
 
     fn seek(&mut self, pos: Duration) -> Result<(), DecoderError>;
 
     fn position(&self) -> Option<Duration>;
     fn duration(&self) -> Option<Duration>;
 
-    /// Write the decoder's audio bytes into the provided buffer, and return the
-    /// number of bytes written
-    fn next_packet_to_buf(&mut self, buf: &mut [f32]) -> Result<usize, DecoderError>;
-
     fn params(&self) -> StreamParams;
 }
 
-pub struct DummyDecoder {}
+pub struct DummyDecoder {
+    instant: std::time::Instant,
+}
+
+impl DummyDecoder {
+    pub fn new() -> Self {
+        Self {
+            instant: Instant::now()
+        }
+    }
+}
 
 impl Decoder for DummyDecoder {
     fn seek(&mut self, _pos: Duration) -> Result<(), DecoderError> {
@@ -58,11 +66,11 @@ impl Decoder for DummyDecoder {
     }
 
     fn position(&self) -> Option<Duration> {
-        None
+        Some(self.instant.elapsed())
     }
 
     fn duration(&self) -> Option<Duration> {
-        None
+        Some(Duration::MAX)
     }
 
     fn next_packet_to_buf(&mut self, buf: &mut [f32]) -> Result<usize, DecoderError> {

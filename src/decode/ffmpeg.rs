@@ -7,7 +7,7 @@ use super::{Decoder, DecoderError, StreamParams};
 
 pub struct FfmpegDecoder {
     seek_send: Sender<i64>,
-    data_recv: Receiver<Vec<f32>>,
+    data_recv: Receiver<Arc<[f32]>>,
     stream_params: StreamParams,
 
     duration: Option<Duration>,
@@ -31,8 +31,14 @@ impl FfmpegDecoder {
         let context = Context::from_parameters(input.parameters()).unwrap();
         let mut decoder = context.decoder().audio().unwrap();
         decoder.set_parameters(input.parameters()).unwrap();
+
+        let rate = match decoder.rate() {
+            r if r <= 96000 => decoder.rate(),
+            _ => 48000,
+        };
+
         let stream_params = StreamParams {
-            rate: 44100,
+            rate,
             channels: decoder.channels(),
             packet_size: if decoder.frame_size() != 0 {
                 decoder.frame_size() as u64 * 10
@@ -41,21 +47,20 @@ impl FfmpegDecoder {
             },
         };
 
-        let mut filter = filter(&decoder).unwrap();
+        let mut filter = filter(&decoder, stream_params).unwrap();
 
-        let (seek_send, seek_recv) = crossbeam::channel::bounded(0);
+        let (seek_send, seek_recv) = crossbeam::channel::bounded::<i64>(1);
         let (data_send, data_recv) = crossbeam::channel::bounded(0);
         thread::spawn({
             let position = Arc::clone(&position);
             move || {
-                let mut decoded = frame::Audio::empty();
-                let mut filtered = frame::Audio::empty();
-
-                for (_stream, packet) in ictx.packets() {
+                while let Some((_stream, packet)) = ictx.packets().next() {
                     // Decode the frame
+                    let mut decoded = frame::Audio::empty();
                     decoder.send_packet(&packet).unwrap_or_default();
                     while decoder.receive_frame(&mut decoded).is_ok() {
                         // Filter the frame to the proper format
+                        let mut filtered = frame::Audio::empty();
                         filter.get("in").unwrap().source().add(&decoded).unwrap();
                         while filter.get("out").unwrap().sink().frame(&mut filtered).is_ok() {
                             let pos = Some(Duration::from_millis(
@@ -63,13 +68,18 @@ impl FfmpegDecoder {
                             );
                             *position.write().unwrap() = pos;
 
-                            let mut output = vec![];
-                            for plane in 0..filtered.planes() {
-                                output.extend(filtered.plane::<f32>(plane));
-                            }
+                            let output: Vec<f32> = (0..filtered.planes()).flat_map(|p| filtered.plane::<f32>(p)).copied().collect();
 
-                            data_send.send(output).unwrap();
+                            data_send.send(output.as_slice().into()).unwrap();
+                            drop(output);
                         }
+                    }
+
+                    // Check for seek events and seek on them
+                    if let Some(s) = seek_recv.try_recv().ok() {
+                        let position = s.rescale((1, 1000), rescale::TIME_BASE);
+                        ictx.seek(position, ..position).unwrap();
+                        decoder.flush();
                     }
                 }
                 decoder.send_eof().unwrap();
@@ -99,7 +109,8 @@ impl Decoder for FfmpegDecoder {
     }
 
     fn seek(&mut self, pos: Duration) -> Result<(), DecoderError> {
-        todo!()
+        self.seek_send.send(pos.as_millis() as i64).unwrap();
+        Ok(())
     }
 
     fn position(&self) -> Option<Duration> {
@@ -115,7 +126,10 @@ impl Decoder for FfmpegDecoder {
     }
 }
 
-fn filter(decoder: &codec::decoder::Audio,) -> Result<filter::Graph, ffmpeg_next::Error> {
+fn filter(
+    decoder: &codec::decoder::Audio,
+    params: StreamParams,
+) -> Result<filter::Graph, ffmpeg_next::Error> {
     let mut filter = filter::Graph::new();
 
     let args = format!(
@@ -137,8 +151,8 @@ fn filter(decoder: &codec::decoder::Audio,) -> Result<filter::Graph, ffmpeg_next
         let mut out = filter.get("out").unwrap();
 
         out.set_sample_format(sample::Sample::F32(Type::Planar));
-        out.set_channel_layout(ffmpeg_next::ChannelLayout::STEREO);
-        out.set_sample_rate(44100);
+        out.set_channel_layout(ffmpeg_next::ChannelLayout::HEXADECAGONAL);
+        out.set_sample_rate(params.rate);
     }
 
     filter.output("in", 0)?.input("out", 0)?.parse("anull")?;

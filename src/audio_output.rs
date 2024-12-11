@@ -52,6 +52,8 @@ pub trait AudioOutput {
     /// Flush the remaining samples from the resampler
     fn flush(&mut self);
 
+    fn seek_flush(&mut self);
+
     /// Set the volume (amplitude) of the output
     fn set_volume(&mut self, vol: Volume);
 
@@ -176,6 +178,14 @@ impl AudioOutput for AudioOutputInner {
         }
 
         Ok(())
+    }
+
+    fn seek_flush(&mut self) {
+        if let Some(resampler) = &mut self.resampler {
+            resampler.reset().unwrap();
+        }
+
+        self.ring_buf.clear();
     }
 
     fn flush(&mut self) {

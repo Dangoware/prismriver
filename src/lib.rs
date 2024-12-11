@@ -270,7 +270,10 @@ fn player_loop(
                         }
 
                         #[cfg(not(any(feature = "ffmpeg", feature = "symphonia")))]
-                        Some(Box::new(decode::DummyDecoder {}))
+                        {
+                            log::error!("using dummmy decoder, there will be no decoding and no output");
+                            Some(Box::new(decode::DummyDecoder::new()))
+                        }
                     };
 
                     p_state.stream_params = Some(p_state.decoder.as_ref().unwrap().params());
@@ -301,6 +304,8 @@ fn player_loop(
                         },
                     }
 
+                    p_state.audio_output.as_mut().unwrap().seek_flush();
+
                     p_state.internal_send.send(Ok(())).unwrap();
                 },
                 InternalMessage::Destroy => {
@@ -327,7 +332,7 @@ fn player_loop(
                 if timer.elapsed() > LOOP_DELAY_US {
                     // Never get stuck in here too long, but if this happens the
                     // decoding speed is too slow
-                    continue 'external;
+                    break;
                 }
 
                 let len = match p_state.decoder.as_mut().unwrap().next_packet_to_buf(&mut output_buffer) {
@@ -352,6 +357,7 @@ fn player_loop(
                 };
                 p_state.audio_output.as_mut().unwrap().write(&output_buffer[0..len]).unwrap();
             }
+
             *p_state.duration.write().unwrap() = p_state.decoder.as_mut().unwrap().duration();
             *p_state.position.write().unwrap() = p_state.decoder.as_mut().unwrap().position();
             //info!("buffer {:0.0}%", (p_state.audio_output.as_mut().unwrap().buffer_level().0 as f32 / p_state.audio_output.as_mut().unwrap().buffer_level().1 as f32) * 100.0);

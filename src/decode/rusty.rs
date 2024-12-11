@@ -1,7 +1,7 @@
 use std::{fs::File, path::Path, time::Duration};
 
 use log::{info, warn};
-use symphonia::core::{audio::{SampleBuffer, SignalSpec}, codecs::{CodecParameters, DecoderOptions, CODEC_TYPE_NULL}, formats::{FormatOptions, FormatReader, SeekMode, SeekTo}, io::{ReadOnlySource, MediaSourceStream, MediaSourceStreamOptions}, meta::MetadataOptions, probe::Hint, units::Time};
+use symphonia::core::{audio::{SampleBuffer, SignalSpec}, codecs::{CodecParameters, DecoderOptions, CODEC_TYPE_NULL}, formats::{FormatOptions, FormatReader, SeekMode, SeekTo}, io::{MediaSourceStream, MediaSourceStreamOptions, ReadOnlySource}, meta::{Limit, MetadataOptions}, probe::Hint, units::Time};
 
 use super::{Decoder, DecoderError, StreamParams};
 
@@ -20,7 +20,7 @@ impl RustyDecoder {
         let file = File::open(&input).unwrap();
         let mss = MediaSourceStream::new(Box::new(ReadOnlySource::new(file)), MediaSourceStreamOptions::default());
 
-        let meta_opts: MetadataOptions = Default::default();
+        let meta_opts: MetadataOptions = MetadataOptions::default();
         let fmt_opts: FormatOptions = FormatOptions {
             enable_gapless: true,
             ..Default::default()
