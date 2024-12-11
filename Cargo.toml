@@ -7,7 +7,7 @@ edition = "2021"
 colog = "1.3"
 cpal = "0.15"
 crossbeam = { version = "0.8", features = ["crossbeam-channel"] }
-ffmpeg-next = { version = "7.1.0", optional = true }
+ffmpeg-next = { version = "7.1", features = ["build", "static"], optional = true }
 log = "0.4"
 rb = "0.4"
 samplerate = "0.2"

@@ -1,10 +1,8 @@
-use std::{ops::Mul, time::Duration};
-
+use std::ops::Mul;
 use cpal::{traits::{DeviceTrait as _, StreamTrait}, Stream, StreamConfig};
 use log::{error, info, warn};
 use rb::{RbConsumer as _, RbInspector, RbProducer as _, RB as _};
 use samplerate::{ConverterType, Samplerate};
-use symphonia::core::sample::Sample;
 
 use crate::decode::StreamParams;
 

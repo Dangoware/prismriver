@@ -89,7 +89,10 @@ impl FfmpegDecoder {
 
 impl Decoder for FfmpegDecoder {
     fn next_packet_to_buf(&mut self, buf: &mut [f32]) -> Result<usize, DecoderError> {
-        let data = self.data_recv.recv().unwrap();
+        let data = match self.data_recv.recv() {
+            Ok(l) => l,
+            Err(_) => return Err(DecoderError::EndOfStream)
+        };
         buf[..data.len()].copy_from_slice(&data);
 
         Ok(data.len())
