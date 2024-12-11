@@ -49,3 +49,32 @@ pub trait Decoder {
 
     fn params(&self) -> StreamParams;
 }
+
+pub struct DummyDecoder {}
+
+impl Decoder for DummyDecoder {
+    fn seek(&mut self, _pos: Duration) -> Result<(), DecoderError> {
+        Ok(())
+    }
+
+    fn position(&self) -> Option<Duration> {
+        None
+    }
+
+    fn duration(&self) -> Option<Duration> {
+        None
+    }
+
+    fn next_packet_to_buf(&mut self, buf: &mut [f32]) -> Result<usize, DecoderError> {
+        buf[..4096].copy_from_slice(&[0f32; 4096]);
+        Ok(4096)
+    }
+
+    fn params(&self) -> StreamParams {
+        StreamParams {
+            rate: 44100,
+            channels: 2,
+            packet_size: 4096
+        }
+    }
+}

@@ -9,7 +9,6 @@ use crossbeam::channel::{self, Receiver, Sender};
 use decode::Decoder;
 use log::{info, warn};
 use thiserror::Error;
-use thread_priority::*;
 
 #[cfg(feature = "symphonia")]
 use decode::RustyDecoder;
@@ -75,6 +74,12 @@ pub struct Prismriver {
     uri_next: Option<String>,
 }
 
+impl Default for Prismriver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Prismriver {
     pub fn new() -> Prismriver {
         let host = cpal::default_host();
@@ -121,7 +126,6 @@ impl Prismriver {
     /// Load a new stream.
     ///
     /// This immediately overrides the previous one, flushing the buffer.
-    #[must_use]
     pub fn load_new(&mut self, uri: &str) -> Result<(), PrismError> {
         let path = PathBuf::from(uri);
         path.canonicalize().unwrap();
@@ -132,7 +136,6 @@ impl Prismriver {
     /// Set a new stream to be played after the current one ends.
     ///
     /// This allows for gapless transitions.
-    #[must_use]
     pub fn load_next(&mut self, _uri: &str) -> Result<(), PrismError> {
         todo!()
     }
@@ -149,7 +152,7 @@ impl Prismriver {
     }
 
     pub fn state(&mut self) -> State {
-        self.state.read().unwrap().clone()
+        *self.state.read().unwrap()
     }
 
     pub fn set_state(&mut self, state: State) {
@@ -161,11 +164,11 @@ impl Prismriver {
     }
 
     pub fn position(&mut self) -> Option<Duration> {
-        self.position.read().unwrap().clone()
+        *self.position.read().unwrap()
     }
 
     pub fn duration(&mut self) -> Option<Duration> {
-        self.duration.read().unwrap().clone()
+        *self.duration.read().unwrap()
     }
 }
 
@@ -219,9 +222,12 @@ fn player_loop(
 
     // Set thread priority to avoid stutters
     #[cfg(target_os = "windows")]
-    if set_current_thread_priority(ThreadPriority::Os(WinAPIThreadPriority::TimeCritical.into())).is_err() {
-        warn!("failed to set playback thread priority");
-    };
+    {
+        use thread_priority::*;
+        if set_current_thread_priority(ThreadPriority::Os(WinAPIThreadPriority::TimeCritical.into())).is_err() {
+            warn!("failed to set playback thread priority");
+        };
+    }
 
     let mut output_buffer = [0f32; BUFFER_MAX as usize];
 
@@ -262,6 +268,9 @@ fn player_loop(
                                 continue;
                             },
                         }
+
+                        #[cfg(not(any(feature = "ffmpeg", feature = "symphonia")))]
+                        Some(Box::new(decode::DummyDecoder {}))
                     };
 
                     p_state.stream_params = Some(p_state.decoder.as_ref().unwrap().params());

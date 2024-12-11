@@ -1,7 +1,7 @@
 use std::{fs::File, path::Path, time::Duration};
 
 use log::{info, warn};
-use symphonia::core::{audio::{SampleBuffer, SignalSpec}, codecs::{CodecParameters, DecoderOptions, CODEC_TYPE_NULL}, formats::{FormatOptions, FormatReader, SeekMode, SeekTo}, io::{ReadOnlySource, MediaSourceStream, MediaSourceStreamOptions}, meta::{MetadataOptions, StandardTagKey}, probe::Hint, units::Time};
+use symphonia::core::{audio::{SampleBuffer, SignalSpec}, codecs::{CodecParameters, DecoderOptions, CODEC_TYPE_NULL}, formats::{FormatOptions, FormatReader, SeekMode, SeekTo}, io::{ReadOnlySource, MediaSourceStream, MediaSourceStreamOptions}, meta::MetadataOptions, probe::Hint, units::Time};
 
 use super::{Decoder, DecoderError, StreamParams};
 
@@ -98,21 +98,13 @@ impl Decoder for RustyDecoder {
     }
 
     fn position(&self) -> Option<Duration> {
-        if let Some(t) = self.params.time_base {
-            Some(t.calc_time(self.timestamp).into())
-        } else {
-            None
-        }
+        self.params.time_base.map(|t| t.calc_time(self.timestamp).into())
     }
 
     fn duration(&self) -> Option<Duration> {
         let dur = self.params.n_frames.map(|frames| self.params.start_ts + frames);
         if let Some(t) = self.params.time_base {
-            if let Some(d) = dur {
-                Some(t.calc_time(d).into())
-            } else {
-                None
-            }
+            dur.map(|d| t.calc_time(d).into())
         } else {
             None
         }

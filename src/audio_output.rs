@@ -27,7 +27,7 @@ pub fn open_output(device: &cpal::Device) -> Result<Box<dyn AudioOutput>, AudioO
     */
 
     // Select proper playback routine based on sample format.
-    Ok(Box::new(AudioOutputInner::new(&device)))
+    Ok(Box::new(AudioOutputInner::new(device)))
 }
 
 pub fn interleave(planar: &[f32], channels: u16) -> Vec<f32> {
@@ -140,7 +140,7 @@ impl AudioOutputInner {
 impl AudioOutput for AudioOutputInner {
     fn write(&mut self, decoded: &[f32]) -> Result<(), ()> {
         // Do nothing if there are no audio frames.
-        if decoded.len() == 0 {
+        if decoded.is_empty() {
             warn!("decoded length was 0");
             return Ok(());
         }

@@ -31,7 +31,7 @@ fn print_timer(pos: Duration, len: Option<Duration>) {
     let len_string = if let Some(l) = len {
         format!("{:02}:{:02}", l.as_secs() / 60, l.as_secs() % 60)
     } else {
-        format!("--:--")
+        "--:--".to_string()
     };
 
     print!(
