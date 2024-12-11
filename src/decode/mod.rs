@@ -3,10 +3,14 @@ use thiserror::Error;
 
 // Mods and stuff -----------
 // --------------------------
+#[cfg(feature = "symphonia")]
 mod rusty;
-mod ffmpeg;
-
+#[cfg(feature = "symphonia")]
 pub use rusty::RustyDecoder;
+
+#[cfg(feature = "ffmpeg")]
+mod ffmpeg;
+#[cfg(feature = "ffmpeg")]
 pub use ffmpeg::FfmpegDecoder;
 
 #[derive(Error, Debug)]

@@ -1,22 +1,25 @@
-use std::time::Duration;
+use std::{fs::File, path::Path, time::Duration};
 
-use log::warn;
-use symphonia::core::{audio::{SampleBuffer, SignalSpec}, codecs::{CodecParameters, DecoderOptions, CODEC_TYPE_NULL}, formats::{FormatOptions, FormatReader, SeekMode, SeekTo}, io::MediaSourceStream, meta::{MetadataOptions, StandardTagKey}, probe::Hint, units::Time};
+use log::{info, warn};
+use symphonia::core::{audio::{SampleBuffer, SignalSpec}, codecs::{CodecParameters, DecoderOptions, CODEC_TYPE_NULL}, formats::{FormatOptions, FormatReader, SeekMode, SeekTo}, io::{ReadOnlySource, MediaSourceStream, MediaSourceStreamOptions}, meta::{MetadataOptions, StandardTagKey}, probe::Hint, units::Time};
 
 use super::{Decoder, DecoderError, StreamParams};
 
 pub struct RustyDecoder {
     format_reader: Box<dyn FormatReader>,
-        decoder: Box<dyn symphonia::core::codecs::Decoder>,
-        sample_buf: Option<SampleBuffer<f32>>,
-        track_id: u32,
-        params: CodecParameters,
-        timestamp: u64,
-        spec: SignalSpec,
+    decoder: Box<dyn symphonia::core::codecs::Decoder>,
+    sample_buf: Option<SampleBuffer<f32>>,
+    track_id: u32,
+    params: CodecParameters,
+    timestamp: u64,
+    spec: SignalSpec,
 }
 
 impl RustyDecoder {
-    pub fn new(input: MediaSourceStream) -> Result<Self, DecoderError> {
+    pub fn new<P: AsRef<Path>>(input: P) -> Result<Self, DecoderError> {
+        let file = File::open(&input).unwrap();
+        let mss = MediaSourceStream::new(Box::new(ReadOnlySource::new(file)), MediaSourceStreamOptions::default());
+
         let meta_opts: MetadataOptions = Default::default();
         let fmt_opts: FormatOptions = FormatOptions {
             enable_gapless: true,
@@ -24,17 +27,25 @@ impl RustyDecoder {
         };
 
         let mut probed = symphonia::default::get_probe()
-            .format(&Hint::new(), input, &fmt_opts, &meta_opts)
+            .format(&Hint::new(), mss, &fmt_opts, &meta_opts)
             .map_err(|e| DecoderError::InternalError(e.to_string()))?;
 
-        if let Some(mut m) = probed.metadata.get() {
-            if let Some(rev) = m.skip_to_latest() {
-                let title = rev.tags().iter().find(|r| r.std_key == Some(StandardTagKey::TrackTitle));
-                dbg!(&title.unwrap().value.to_string());
+        let tags: Vec<symphonia::core::meta::Tag> = if let Some(mut m) = probed.metadata.get() {
+            let mut new = true;
+            let mut output = Vec::new();
+            while new {
+                if let Some(rev) = m.current() {
+                    output.extend(rev.tags().iter().cloned())
+                }
+                new = m.pop().is_some();
             }
-        }
-        let format_reader = probed.format;
+            output
+        } else {
+            Vec::new()
+        };
+        info!("found {} metadata tags", tags.len());
 
+        let format_reader = probed.format;
         let track = format_reader
             .tracks()
             .iter()
@@ -43,8 +54,8 @@ impl RustyDecoder {
 
         let dec_opts: DecoderOptions = Default::default();
         let decoder = symphonia::default::get_codecs()
-        .make(&track.codec_params, &dec_opts)
-        .expect("unsupported codec");
+            .make(&track.codec_params, &dec_opts)
+            .expect("unsupported codec");
 
         if decoder.codec_params().channels.unwrap_or_default().count() < 2 {
             warn!("mono audio will be sent in stereo to both left and right");
@@ -56,14 +67,14 @@ impl RustyDecoder {
         Ok(Self {
             spec: SignalSpec::new(
                 decoder.codec_params().sample_rate.unwrap(),
-                                  decoder.codec_params().channels.unwrap()
+                decoder.codec_params().channels.unwrap()
             ),
             params,
             format_reader,
-                decoder,
-                track_id,
-                timestamp: 0,
-                sample_buf: None,
+            decoder,
+            track_id,
+            timestamp: 0,
+            sample_buf: None,
         })
     }
 }
@@ -74,7 +85,7 @@ impl Decoder for RustyDecoder {
             SeekMode::Accurate,
             SeekTo::Time {
                 time: Time::from(pos),
-                                                       track_id: Some(self.track_id),
+                track_id: Some(self.track_id),
             }
         ) {
             Ok(ts) => ts.actual_ts,

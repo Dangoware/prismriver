@@ -1,15 +1,20 @@
 mod audio_output;
 mod decode;
 
-use std::{fs::File, path::PathBuf, sync::{Arc, RwLock}, thread, time::{Duration, Instant}};
+use std::{path::PathBuf, sync::{Arc, RwLock}, thread, time::{Duration, Instant}};
 
 pub use audio_output::{AudioOutput, Volume};
 use cpal::{traits::HostTrait as _, Device};
 use crossbeam::channel::{self, Receiver, Sender};
-use decode::{Decoder, FfmpegDecoder, RustyDecoder};
+use decode::Decoder;
 use log::{info, warn};
-use symphonia::core::io::{MediaSourceStream, MediaSourceStreamOptions};
 use thiserror::Error;
+use thread_priority::*;
+
+#[cfg(feature = "symphonia")]
+use decode::RustyDecoder;
+#[cfg(feature = "ffmpeg")]
+use decode::FfmpegDecoder;
 
 #[derive(Debug, Clone, Copy)]
 pub enum Command {
@@ -212,6 +217,12 @@ fn player_loop(
         stream_params: None,
     };
 
+    // Set thread priority to avoid stutters
+    #[cfg(target_os = "windows")]
+    if set_current_thread_priority(ThreadPriority::Os(WinAPIThreadPriority::TimeCritical.into())).is_err() {
+        warn!("failed to set playback thread priority");
+    };
+
     let mut output_buffer = [0f32; BUFFER_MAX as usize];
 
     'external: loop {
@@ -232,21 +243,26 @@ fn player_loop(
 
                     // TODO: Make this detect format and use the appropriate
                     // decoder
-                    p_state.decoder = match FfmpegDecoder::new(f) {
-                        Ok(d) => Some(Box::new(d)),
-                        Err(e) => {
-                            let _ = p_state.internal_send.try_send(Err(PrismError::DecoderError(e)));
-                            continue;
-                        },
-                    };
+                    p_state.decoder = {
+                        #[cfg(feature = "ffmpeg")]
+                        match FfmpegDecoder::new(f) {
+                            Ok(d) => Some(Box::new(d)),
+                            Err(e) => {
+                                let _ = p_state.internal_send.try_send(Err(PrismError::DecoderError(e)));
+                                continue;
+                            },
+                        }
 
-                    /*match RustyDecoder::new(f) {
-                        Ok(d) => Some(Box::new(d)),
-                        Err(e) => {
-                            let _ = p_state.internal_send.try_send(Err(PrismError::DecoderError(e)));
-                            continue;
-                        },
-                    };*/
+                        #[cfg(feature = "symphonia")]
+                        #[cfg(not(feature = "ffmpeg"))]
+                        match RustyDecoder::new(f) {
+                            Ok(d) => Some(Box::new(d)),
+                            Err(e) => {
+                                let _ = p_state.internal_send.try_send(Err(PrismError::DecoderError(e)));
+                                continue;
+                            },
+                        }
+                    };
 
                     p_state.stream_params = Some(p_state.decoder.as_ref().unwrap().params());
                     p_state.audio_output.as_mut().unwrap().update_params(p_state.stream_params.unwrap());
@@ -329,7 +345,7 @@ fn player_loop(
             }
             *p_state.duration.write().unwrap() = p_state.decoder.as_mut().unwrap().duration();
             *p_state.position.write().unwrap() = p_state.decoder.as_mut().unwrap().position();
-            //info!("buffer {:0.0}%", (audio_output.as_mut().unwrap().buffer_level().0 as f32 / audio_output.as_mut().unwrap().buffer_level().1 as f32) * 100.0);
+            //info!("buffer {:0.0}%", (p_state.audio_output.as_mut().unwrap().buffer_level().0 as f32 / p_state.audio_output.as_mut().unwrap().buffer_level().1 as f32) * 100.0);
         }
 
         // Prevent this from hogging a core

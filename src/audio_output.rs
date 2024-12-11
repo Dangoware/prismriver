@@ -1,4 +1,4 @@
-use std::ops::Mul;
+use std::{ops::Mul, time::Duration};
 
 use cpal::{traits::{DeviceTrait as _, StreamTrait}, Stream, StreamConfig};
 use log::{error, info, warn};
@@ -86,9 +86,22 @@ impl AudioOutputInner {
     fn new(
         device: &cpal::Device,
     ) -> Self {
+        // Ensure that the stream has a valid output sample rate.
+        // Always prefer OUTPUT_RATE_HZ, but adapt as needed.
+        let mut out_hz = OUTPUT_RATE_HZ;
+        let mut min = 0;
+        let mut max = 0;
+        for config in device.supported_output_configs().unwrap() {
+            (min, max) = (config.min_sample_rate().0, config.max_sample_rate().0);
+        }
+        out_hz = out_hz.clamp(min, max);
+        if out_hz != OUTPUT_RATE_HZ {
+            warn!("output rate can't be set to {}, using {}", OUTPUT_RATE_HZ, out_hz)
+        }
+
         let output_params = cpal::StreamConfig {
             channels: CHANNELS_OUT,
-            sample_rate: cpal::SampleRate(OUTPUT_RATE_HZ),
+            sample_rate: cpal::SampleRate(out_hz),
             buffer_size: cpal::BufferSize::Default,
         };
 
@@ -106,7 +119,7 @@ impl AudioOutputInner {
                 let written = ring_buf_consumer.read(data).unwrap_or(0);
 
                 // Mute any remaining samples.
-                data[written..].iter_mut().for_each(|s| *s = f32::MID);
+                data[written..].iter_mut().for_each(|s| *s = 0f32);
             },
             move |err| error!("audio output error: {}", err),
             None,
@@ -231,7 +244,7 @@ impl AudioOutput for AudioOutputInner {
     }
 
     fn buffer_healthy(&self) -> usize {
-        self.ring_buf.capacity() - (self.ring_buf.capacity() / 3)
+        self.ring_buf.capacity() - (self.ring_buf.capacity() / 8)
     }
 }
 
