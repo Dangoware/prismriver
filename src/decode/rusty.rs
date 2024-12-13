@@ -1,7 +1,10 @@
 use std::{fs::File, path::Path, time::Duration};
 
+use fluent_uri::Uri;
 use log::{info, warn};
-use symphonia::core::{audio::{SampleBuffer, SignalSpec}, codecs::{CodecParameters, DecoderOptions, CODEC_TYPE_NULL}, formats::{FormatOptions, FormatReader, SeekMode, SeekTo}, io::{MediaSourceStream, MediaSourceStreamOptions, ReadOnlySource}, meta::{Limit, MetadataOptions}, probe::Hint, units::Time};
+use symphonia::core::{audio::{SampleBuffer, SignalSpec}, codecs::{CodecParameters, DecoderOptions, CODEC_TYPE_NULL}, formats::{FormatOptions, FormatReader, SeekMode, SeekTo}, io::{MediaSourceStream, MediaSourceStreamOptions, ReadOnlySource}, meta::MetadataOptions, probe::Hint, units::Time};
+
+use crate::uri_to_path;
 
 use super::{Decoder, DecoderError, StreamParams};
 
@@ -16,8 +19,17 @@ pub struct RustyDecoder {
 }
 
 impl RustyDecoder {
-    pub fn new<P: AsRef<Path>>(input: P) -> Result<Self, DecoderError> {
-        let file = File::open(&input).unwrap();
+    pub fn new(input: &Uri<String>) -> Result<Self, DecoderError> {
+        if input.scheme().as_str() != "file" {
+            return Err(DecoderError::InternalError("Invalid URI".to_string()))
+        }
+
+        if let Err(e) = uri_to_path(input) {
+            return Err(DecoderError::InternalError(e.to_string()))
+        }
+
+
+        let file = File::open(&uri_to_path(input).unwrap()).unwrap();
         let mss = MediaSourceStream::new(Box::new(ReadOnlySource::new(file)), MediaSourceStreamOptions::default());
 
         let meta_opts: MetadataOptions = MetadataOptions::default();

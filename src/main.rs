@@ -1,7 +1,9 @@
 use std::io::{self, Write};
+use std::path::PathBuf;
 use std::{thread::sleep, time::Duration};
 
-use prismriver::State;
+use fluent_uri::Uri;
+use prismriver::{path_to_uri, State};
 use prismriver::Volume;
 use prismriver::Prismriver;
 
@@ -14,7 +16,15 @@ fn main() {
 
     for path in args {
         println!("Loading... {}", path);
-        player.load_new(&path).unwrap();
+
+        let uri = if path.starts_with("http") {
+            path.parse::<Uri<String>>().unwrap()
+        } else {
+            path_to_uri(&path).unwrap()
+        };
+
+        //let path = PathBuf::from(path);
+        player.load_new(&uri).unwrap();
         player.set_state(State::Playing);
         println!("Playing!");
 

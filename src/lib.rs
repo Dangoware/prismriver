@@ -1,14 +1,14 @@
 mod audio_output;
 mod decode;
 
-use std::{path::PathBuf, sync::{Arc, RwLock}, thread, time::{Duration, Instant}};
+use std::{io, path::{Path, PathBuf}, sync::{Arc, RwLock}, thread, time::{Duration, Instant}};
 
 pub use audio_output::{AudioOutput, Volume};
 use cpal::{traits::HostTrait as _, Device};
 use crossbeam::channel::{self, Receiver, Sender};
 use decode::Decoder;
+use fluent_uri::{component::Scheme, encoding::{encoder, EString}, Uri};
 use log::{info, warn};
-use thiserror::Error;
 
 #[cfg(feature = "symphonia")]
 use decode::RustyDecoder;
@@ -31,9 +31,9 @@ pub enum InternalMessage {
     Seek(Duration),
 
     /// Set up the thread with a new stream
-    LoadNew(PathBuf),
+    LoadNew(Uri<String>),
 
-    LoadNext(PathBuf),
+    LoadNext(Uri<String>),
 
     /// Give the thread a new output device
     NewOutputDevice(Device),
@@ -51,13 +51,16 @@ pub enum State {
     Buffering(u8),
 }
 
-#[derive(Error, Debug)]
+#[derive(thiserror::Error, Debug)]
 pub enum PrismError {
     #[error("Internal decoder error {}", 0)]
     DecoderError(#[from] decode::DecoderError),
 
     #[error("Nothing is loaded, the operation is invalid")]
     NothingLoaded,
+
+    #[error("The internal thread panicked!")]
+    InternalThreadPanic,
 }
 
 pub struct Prismriver {
@@ -70,8 +73,8 @@ pub struct Prismriver {
     internal_send: channel::Sender<InternalMessage>,
     internal_recvback: channel::Receiver<Result<(), PrismError>>,
 
-    uri_current: Option<String>,
-    uri_next: Option<String>,
+    uri_current: Option<Uri<String>>,
+    uri_next: Option<Uri<String>>,
 }
 
 impl Default for Prismriver {
@@ -120,23 +123,23 @@ impl Prismriver {
 
     fn send_recv(&mut self, message: InternalMessage) -> Result<(), PrismError> {
         self.internal_send.send(message).unwrap();
-        self.internal_recvback.recv().unwrap()
+        match self.internal_recvback.recv() {
+            Ok(o) => o,
+            Err(_) => Err(PrismError::InternalThreadPanic),
+        }
     }
 
     /// Load a new stream.
     ///
     /// This immediately overrides the previous one, flushing the buffer.
-    pub fn load_new(&mut self, uri: &str) -> Result<(), PrismError> {
-        let path = PathBuf::from(uri);
-        path.canonicalize().unwrap();
-
-        self.send_recv(InternalMessage::LoadNew(path))
+    pub fn load_new(&mut self, uri: &Uri<String>) -> Result<(), PrismError> {
+        self.send_recv(InternalMessage::LoadNew(uri.clone()))
     }
 
     /// Set a new stream to be played after the current one ends.
     ///
     /// This allows for gapless transitions.
-    pub fn load_next(&mut self, _uri: &str) -> Result<(), PrismError> {
+    pub fn load_next(&mut self, _uri: &Uri<String>) -> Result<(), PrismError> {
         todo!()
     }
 
@@ -188,7 +191,7 @@ struct PlayerState {
     decoder: Option<Box<dyn Decoder>>,
     volume: Volume,
 
-    next_source: Option<PathBuf>,
+    next_source: Option<Uri<String>>,
     stream_params: Option<decode::StreamParams>,
 
     internal_recv: Receiver<InternalMessage>,
@@ -247,32 +250,18 @@ fn player_loop(
                         panic!("This shouldn't be possible!")
                     }
 
-                    // TODO: Make this detect format and use the appropriate
-                    // decoder
+                    // TODO: Perform format detection for selection and perform
+                    // error handling
                     p_state.decoder = {
-                        #[cfg(feature = "ffmpeg")]
-                        match FfmpegDecoder::new(f) {
-                            Ok(d) => Some(Box::new(d)),
-                            Err(e) => {
-                                let _ = p_state.internal_send.try_send(Err(PrismError::DecoderError(e)));
-                                continue;
-                            },
-                        }
-
-                        #[cfg(feature = "symphonia")]
-                        #[cfg(not(feature = "ffmpeg"))]
-                        match RustyDecoder::new(f) {
-                            Ok(d) => Some(Box::new(d)),
-                            Err(e) => {
-                                let _ = p_state.internal_send.try_send(Err(PrismError::DecoderError(e)));
-                                continue;
-                            },
-                        }
-
-                        #[cfg(not(any(feature = "ffmpeg", feature = "symphonia")))]
-                        {
-                            log::error!("using dummmy decoder, there will be no decoding and no output");
-                            Some(Box::new(decode::DummyDecoder::new()))
+                        match f.scheme().as_str() {
+                            #[cfg(feature = "ffmpeg")]
+                            "http" | "https" => Some(Box::new(FfmpegDecoder::new(f).unwrap())),
+                            #[cfg(feature = "symphonia")]
+                            "file" => Some(Box::new(RustyDecoder::new(&f).unwrap())),
+                            _ => {
+                                log::error!("using dummmy decoder, there will be no decoding and no output");
+                                Some(Box::new(decode::DummyDecoder::new()))
+                            }
                         }
                     };
 
@@ -366,4 +355,26 @@ fn player_loop(
         // Prevent this from hogging a core
         thread::sleep(LOOP_DELAY_US);
     }
+}
+
+pub fn path_to_uri<P: AsRef<Path>>(path: &P) -> Result<Uri::<String>, Box<dyn std::error::Error>> {
+    let canonicalized = path.as_ref().canonicalize().unwrap();
+    let path_string = canonicalized.to_string_lossy();
+
+    let mut percent_path: EString<encoder::Path> = EString::new();
+    percent_path.encode::<encoder::Path>(&path_string.to_string());
+    let uri = Uri::<String>::builder()
+        .scheme(&Scheme::new_or_panic("file"))
+        .path(&percent_path)
+        .build()?;
+
+    Ok(uri)
+}
+
+pub fn uri_to_path(uri: &Uri<String>) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let estr = uri.path();
+    let decoded = estr.decode().into_string()?;
+    let path = PathBuf::from(decoded.to_string());
+
+    Ok(path)
 }

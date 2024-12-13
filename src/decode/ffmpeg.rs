@@ -1,7 +1,10 @@
-use std::{io::Read, path::Path, sync::{Arc, Mutex, RwLock}, thread, time::Duration};
+use std::{path::PathBuf, sync::{Arc, RwLock}, thread, time::Duration};
 use crossbeam::channel::{Receiver, Sender};
 use ffmpeg_next::{codec::{self, Context}, filter, format::sample::{self, Type}, frame, media, rescale, Rescale as _};
-use rb::{Consumer, RbConsumer, RbProducer, RB as _};
+use fluent_uri::Uri;
+use log::info;
+
+use crate::uri_to_path;
 
 use super::{Decoder, DecoderError, StreamParams};
 
@@ -15,14 +18,25 @@ pub struct FfmpegDecoder {
 }
 
 impl FfmpegDecoder {
-    pub fn new<P: AsRef<Path>>(input: P) -> Result<Self, DecoderError> {
-        ffmpeg_next::init().unwrap();
+    pub fn new(input: Uri<String>) -> Result<Self, DecoderError> {
+        ffmpeg_next::init()
+            .map_err(|e| DecoderError::InternalError(e.to_string()))?;
 
-        let mut ictx = ffmpeg_next::format::input(&input).unwrap();
+        let mut ictx = if input.scheme().as_str().starts_with("http") {
+            info!("playing back from network source");
+            ffmpeg_next::format::input::<PathBuf>(&input.to_string().into())
+                .map_err(|e| DecoderError::InternalError(e.to_string()))?
+        } else {
+            let path = uri_to_path(&input).unwrap();
+            ffmpeg_next::format::input(&path)
+                .map_err(|e| DecoderError::InternalError(e.to_string()))?
+        };
+
+
         let input = ictx
             .streams()
             .best(media::Type::Audio)
-            .expect("could not find best audio stream");
+            .ok_or(DecoderError::InternalError("Could not find audio stream".to_string()))?;
 
         // Duration in ms
         let duration = Some(Duration::from_millis(ictx.duration().rescale(rescale::TIME_BASE, (1, 1000)) as u64));
@@ -37,11 +51,13 @@ impl FfmpegDecoder {
             _ => 48000,
         };
 
+        dbg!(decoder.frame_size());
+
         let stream_params = StreamParams {
             rate,
             channels: decoder.channels(),
             packet_size: if decoder.frame_size() != 0 {
-                decoder.frame_size() as u64 * 10
+                decoder.frame_size() as u64
             } else {
                 4096
             },
@@ -63,10 +79,13 @@ impl FfmpegDecoder {
                         let mut filtered = frame::Audio::empty();
                         filter.get("in").unwrap().source().add(&decoded).unwrap();
                         while filter.get("out").unwrap().sink().frame(&mut filtered).is_ok() {
-                            let pos = Some(Duration::from_millis(
-                                filtered.timestamp().unwrap().rescale(decoder.time_base(), (1, 1000)) as u64)
-                            );
-                            *position.write().unwrap() = pos;
+                            if decoded.timestamp().is_some() {
+                                dbg!(decoded.timestamp());
+                                let pos = Some(Duration::from_millis(
+                                    decoded.timestamp().unwrap().rescale(rescale::TIME_BASE, (1, 1000)) as u64)
+                                );
+                                *position.write().unwrap() = pos;
+                            }
 
                             let output: Vec<f32> = (0..filtered.planes()).flat_map(|p| filtered.plane::<f32>(p)).copied().collect();
 

@@ -7,13 +7,14 @@ edition = "2021"
 colog = "1.3"
 cpal = "0.15"
 crossbeam = { version = "0.8", features = ["crossbeam-channel"] }
-ffmpeg-next = { version = "7.1", features = ["build", "static"], optional = true }
+ffmpeg-next = { version = "7.1", features = ["build", "static", "build-lib-openssl"], optional = true }
+fluent-uri = "0.3"
 log = "0.4"
 rb = "0.4"
 samplerate = "0.2"
 symphonia = { version = "0.5", features = ["all-codecs", "opt-simd"], optional = true }
 thiserror = "2.0"
-thread-priority = "1.2.0"
+thread-priority = "1.2"
 
 [features]
 default = ["symphonia"]
