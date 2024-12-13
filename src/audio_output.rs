@@ -3,6 +3,7 @@ use cpal::{traits::{DeviceTrait as _, StreamTrait}, Stream, StreamConfig};
 use log::{error, info, warn};
 use rb::{RbConsumer as _, RbInspector, RbProducer as _, RB as _};
 use samplerate::{ConverterType, Samplerate};
+use thiserror::Error;
 
 use crate::decode::StreamParams;
 
@@ -16,17 +17,6 @@ pub enum AudioOutputError {
 }
 
 pub fn open_output(device: &cpal::Device) -> Result<Box<dyn AudioOutput>, AudioOutputError> {
-    /* This is performed inside the trait struct now
-
-    let config = match device.default_output_config() {
-        Ok(config) => config,
-        Err(_err) => {
-            return Err(AudioOutputError::OpenStreamError);
-        }
-    };
-    */
-
-    // Select proper playback routine based on sample format.
     Ok(Box::new(AudioOutputInner::new(device)))
 }
 
@@ -45,9 +35,20 @@ pub fn interleave(planar: &[f32], channels: u16) -> Vec<f32> {
     interleaved
 }
 
+
+#[derive(Error, Debug)]
+pub enum OutputError {
+    #[error("The resampler has encountered an error: {}", 0)]
+    ResamplerError(samplerate::Error)
+}
+
 pub trait AudioOutput {
-    /// Write some samples into the buffer to be played
-    fn write(&mut self, decoded: &[f32]) -> Result<(), ()>;
+    /// Write some samples into the buffer to be played.
+    ///
+    /// This function will block if called with a full buffer. To avoid
+    /// blocking, you can check the [AudioOutput::buffer_healthy] level against
+    /// the current level from [AudioOutput::buffer_level].
+    fn write(&mut self, decoded: &[f32]) -> Result<(), OutputError>;
 
     /// Flush the remaining samples from the resampler
     fn flush(&mut self);
@@ -140,7 +141,7 @@ impl AudioOutputInner {
 }
 
 impl AudioOutput for AudioOutputInner {
-    fn write(&mut self, decoded: &[f32]) -> Result<(), ()> {
+    fn write(&mut self, decoded: &[f32]) -> Result<(), OutputError> {
         // Do nothing if there are no audio frames.
         if decoded.is_empty() {
             warn!("decoded length was 0");
@@ -160,7 +161,7 @@ impl AudioOutput for AudioOutputInner {
         let processed_samples = if let Some(resampler) = &mut self.resampler {
             match resampler.process(&decoded) {
                 Ok(resampled) => resampled,
-                Err(_) => return Ok(()),
+                Err(e) => return Err(OutputError::ResamplerError(e)),
             }
         } else {
             decoded.to_vec()

@@ -1,7 +1,7 @@
 use std::{fs::File, path::Path, time::Duration};
 
 use log::{info, warn};
-use symphonia::core::{audio::{SampleBuffer, SignalSpec}, codecs::{CodecParameters, DecoderOptions, CODEC_TYPE_NULL}, formats::{FormatOptions, FormatReader, SeekMode, SeekTo}, io::{MediaSourceStream, MediaSourceStreamOptions, ReadOnlySource}, meta::{Limit, MetadataOptions}, probe::Hint, units::Time};
+use symphonia::core::{audio::{SampleBuffer, SignalSpec}, codecs::{CodecParameters, DecoderOptions, CODEC_TYPE_NULL}, formats::{FormatOptions, FormatReader, SeekMode, SeekTo}, io::{MediaSourceStream, MediaSourceStreamOptions, ReadOnlySource}, meta::MetadataOptions, probe::Hint, units::Time};
 
 use super::{Decoder, DecoderError, StreamParams};
 
@@ -80,36 +80,6 @@ impl RustyDecoder {
 }
 
 impl Decoder for RustyDecoder {
-    fn seek(&mut self, pos: Duration) -> Result<(), DecoderError> {
-        self.timestamp = match self.format_reader.seek(
-            SeekMode::Accurate,
-            SeekTo::Time {
-                time: Time::from(pos),
-                track_id: Some(self.track_id),
-            }
-        ) {
-            Ok(ts) => ts.actual_ts,
-            Err(e) => return Err(DecoderError::InternalError(e.to_string())),
-        };
-
-        self.decoder.reset();
-
-        Ok(())
-    }
-
-    fn position(&self) -> Option<Duration> {
-        self.params.time_base.map(|t| t.calc_time(self.timestamp).into())
-    }
-
-    fn duration(&self) -> Option<Duration> {
-        let dur = self.params.n_frames.map(|frames| self.params.start_ts + frames);
-        if let Some(t) = self.params.time_base {
-            dur.map(|d| t.calc_time(d).into())
-        } else {
-            None
-        }
-    }
-
     fn next_packet_to_buf(&mut self, buf: &mut [f32]) -> Result<usize, DecoderError> {
         let mut offset = 0;
         loop {
@@ -178,6 +148,37 @@ impl Decoder for RustyDecoder {
         }
 
         Ok(offset)
+    }
+
+
+    fn seek(&mut self, pos: Duration) -> Result<(), DecoderError> {
+        self.timestamp = match self.format_reader.seek(
+            SeekMode::Accurate,
+            SeekTo::Time {
+                time: Time::from(pos),
+                track_id: Some(self.track_id),
+            }
+        ) {
+            Ok(ts) => ts.actual_ts,
+            Err(e) => return Err(DecoderError::InternalError(e.to_string())),
+        };
+
+        self.decoder.reset();
+
+        Ok(())
+    }
+
+    fn position(&self) -> Option<Duration> {
+        self.params.time_base.map(|t| t.calc_time(self.timestamp).into())
+    }
+
+    fn duration(&self) -> Option<Duration> {
+        let dur = self.params.n_frames.map(|frames| self.params.start_ts + frames);
+        if let Some(t) = self.params.time_base {
+            dur.map(|d| t.calc_time(d).into())
+        } else {
+            None
+        }
     }
 
     fn params(&self) -> StreamParams {

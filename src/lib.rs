@@ -6,7 +6,7 @@ use std::{path::PathBuf, sync::{Arc, RwLock}, thread, time::{Duration, Instant}}
 pub use audio_output::{AudioOutput, Volume};
 use cpal::{traits::HostTrait as _, Device};
 use crossbeam::channel::{self, Receiver, Sender};
-use decode::Decoder;
+use decode::{Decoder, MidiDecoder};
 use log::{info, warn};
 use thiserror::Error;
 
@@ -179,7 +179,7 @@ impl Drop for Prismriver {
 }
 
 const LOOP_DELAY_US: Duration = Duration::from_micros(5000);
-pub const BUFFER_MAX: u64 = 240_000 / 4;
+pub const BUFFER_MAX: u64 = 240_000;
 
 struct PlayerState {
     audio_output: Option<Box<dyn AudioOutput>>,
@@ -229,7 +229,7 @@ fn player_loop(
         };
     }
 
-    let mut output_buffer = [0f32; BUFFER_MAX as usize];
+    let mut output_buffer = vec![0f32; BUFFER_MAX as usize];
 
     'external: loop {
         let timer = Instant::now();
@@ -261,10 +261,10 @@ fn player_loop(
 
                         #[cfg(feature = "symphonia")]
                         #[cfg(not(feature = "ffmpeg"))]
-                        match RustyDecoder::new(f) {
+                        match MidiDecoder::new() {
                             Ok(d) => Some(Box::new(d)),
                             Err(e) => {
-                                let _ = p_state.internal_send.try_send(Err(PrismError::DecoderError(e)));
+                                let _ = p_state.internal_send.try_send(Err(PrismError::NothingLoaded));
                                 continue;
                             },
                         }
@@ -360,10 +360,29 @@ fn player_loop(
 
             *p_state.duration.write().unwrap() = p_state.decoder.as_mut().unwrap().duration();
             *p_state.position.write().unwrap() = p_state.decoder.as_mut().unwrap().position();
-            //info!("buffer {:0.0}%", (p_state.audio_output.as_mut().unwrap().buffer_level().0 as f32 / p_state.audio_output.as_mut().unwrap().buffer_level().1 as f32) * 100.0);
+
+            /*
+            print_buffer_state(
+                p_state.audio_output.as_mut().unwrap().buffer_level().0,
+                p_state.audio_output.as_mut().unwrap().buffer_level().1,
+                p_state.audio_output.as_mut().unwrap().buffer_healthy(),
+            );
+            */
         }
 
         // Prevent this from hogging a core
         thread::sleep(LOOP_DELAY_US);
     }
+}
+
+fn print_buffer_state(
+    buffer_current: usize,
+    buffer_max: usize,
+    buffer_healthy: usize,
+) {
+    info!(
+        "buffer {:0.0}%, healthy is {:0.0}%",
+        (buffer_current as f32 / buffer_max as f32) * 100.0,
+        (buffer_healthy as f32 / buffer_max as f32) * 100.0,
+    );
 }

@@ -8,6 +8,9 @@ mod rusty;
 #[cfg(feature = "symphonia")]
 pub use rusty::RustyDecoder;
 
+mod midi;
+pub use midi::MidiDecoder;
+
 #[cfg(feature = "ffmpeg")]
 mod ffmpeg;
 #[cfg(feature = "ffmpeg")]

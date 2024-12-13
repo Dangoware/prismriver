@@ -9,6 +9,8 @@ cpal = "0.15"
 crossbeam = { version = "0.8", features = ["crossbeam-channel"] }
 ffmpeg-next = { version = "7.1", features = ["build", "static"], optional = true }
 log = "0.4"
+midly = "0.5.3"
+oxisynth = { version = "0.0.5", features = ["sf3"] }
 rb = "0.4"
 samplerate = "0.2"
 symphonia = { version = "0.5", features = ["all-codecs", "opt-simd"], optional = true }

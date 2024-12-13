@@ -1,7 +1,6 @@
-use std::{io::Read, path::Path, sync::{Arc, Mutex, RwLock}, thread, time::Duration};
+use std::{path::Path, sync::{Arc, RwLock}, thread, time::Duration};
 use crossbeam::channel::{Receiver, Sender};
 use ffmpeg_next::{codec::{self, Context}, filter, format::sample::{self, Type}, frame, media, rescale, Rescale as _};
-use rb::{Consumer, RbConsumer, RbProducer, RB as _};
 
 use super::{Decoder, DecoderError, StreamParams};
 
@@ -76,7 +75,7 @@ impl FfmpegDecoder {
                     }
 
                     // Check for seek events and seek on them
-                    if let Some(s) = seek_recv.try_recv().ok() {
+                    if let Ok(s) = seek_recv.try_recv() {
                         let position = s.rescale((1, 1000), rescale::TIME_BASE);
                         ictx.seek(position, ..position).unwrap();
                         decoder.flush();
@@ -114,7 +113,7 @@ impl Decoder for FfmpegDecoder {
     }
 
     fn position(&self) -> Option<Duration> {
-        self.position.read().unwrap().clone()
+        *self.position.read().unwrap()
     }
 
     fn duration(&self) -> Option<Duration> {
