@@ -1,4 +1,4 @@
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use thiserror::Error;
 
 // Mods and stuff -----------
@@ -54,45 +54,52 @@ pub trait Decoder {
     fn params(&self) -> StreamParams;
 }
 
-pub struct DummyDecoder {
-    instant: std::time::Instant,
-}
+#[cfg(not(any(feature = "symphonia", feature = "ffmpeg")))]
+pub mod dummy {
+    use std::time::Duration;
 
-impl DummyDecoder {
-    pub fn new() -> Self {
-        Self {
-            instant: Instant::now()
+    use super::{Decoder, DecoderError, StreamParams};
+
+    pub struct DummyDecoder {
+        instant: std::time::Instant,
+    }
+
+    impl DummyDecoder {
+        pub fn new() -> Self {
+            Self {
+                instant: Instant::now()
+            }
         }
     }
-}
 
-impl Decoder for DummyDecoder {
-    fn seek_absolute(&mut self, _pos: Duration) -> Result<(), DecoderError> {
-        Ok(())
-    }
+    impl Decoder for DummyDecoder {
+        fn seek_absolute(&mut self, _pos: Duration) -> Result<(), DecoderError> {
+            Ok(())
+        }
 
-    fn seek_relative(&mut self, _pos: Duration) -> Result<(), DecoderError> {
-        Ok(())
-    }
+        fn seek_relative(&mut self, _pos: Duration) -> Result<(), DecoderError> {
+            Ok(())
+        }
 
-    fn position(&self) -> Option<Duration> {
-        Some(self.instant.elapsed())
-    }
+        fn position(&self) -> Option<Duration> {
+            Some(self.instant.elapsed())
+        }
 
-    fn duration(&self) -> Option<Duration> {
-        Some(Duration::MAX)
-    }
+        fn duration(&self) -> Option<Duration> {
+            Some(Duration::MAX)
+        }
 
-    fn next_packet_to_buf(&mut self, buf: &mut [f32]) -> Result<usize, DecoderError> {
-        buf[..4096].copy_from_slice(&[0f32; 4096]);
-        Ok(4096)
-    }
+        fn next_packet_to_buf(&mut self, buf: &mut [f32]) -> Result<usize, DecoderError> {
+            buf[..4096].copy_from_slice(&[0f32; 4096]);
+            Ok(4096)
+        }
 
-    fn params(&self) -> StreamParams {
-        StreamParams {
-            rate: 44100,
-            channels: 2,
-            packet_size: 4096
+        fn params(&self) -> StreamParams {
+            StreamParams {
+                rate: 44100,
+                channels: 2,
+                packet_size: 4096
+            }
         }
     }
 }

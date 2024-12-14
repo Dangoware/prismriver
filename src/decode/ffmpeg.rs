@@ -23,7 +23,7 @@ impl FfmpegDecoder {
             .map_err(|e| DecoderError::InternalError(e.to_string()))?;
         ffmpeg_next::log::set_level(ffmpeg_next::log::Level::Quiet);
 
-        let mut ictx = if input.scheme().as_str().starts_with("http") {
+        let ictx = if input.scheme().as_str().starts_with("http") {
             info!("playing back from network source");
             ffmpeg_next::format::input::<PathBuf>(&input.to_string().into())
                 .map_err(|e| DecoderError::InternalError(e.to_string()))?
@@ -111,7 +111,7 @@ impl Decoder for FfmpegDecoder {
         Ok(())
     }
 
-    fn seek_relative(&mut self, pos: Duration) -> Result<(), DecoderError> {
+    fn seek_relative(&mut self, _pos: Duration) -> Result<(), DecoderError> {
         todo!()
     }
 

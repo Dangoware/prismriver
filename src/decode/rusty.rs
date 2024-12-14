@@ -1,4 +1,4 @@
-use std::{fs::File, path::Path, time::Duration};
+use std::{fs::File, time::Duration};
 
 use fluent_uri::Uri;
 use log::{info, warn};
@@ -24,12 +24,12 @@ impl RustyDecoder {
             return Err(DecoderError::InternalError("Invalid URI".to_string()))
         }
 
-        if let Err(e) = uri_to_path(input) {
-            return Err(DecoderError::InternalError(e.to_string()))
+        if uri_to_path(input).is_err() {
+            return Err(DecoderError::InternalError("URI was not a valid path".to_string()))
         }
 
 
-        let file = File::open(&uri_to_path(input).unwrap()).unwrap();
+        let file = File::open(uri_to_path(input).unwrap()).unwrap();
         let mss = MediaSourceStream::new(Box::new(ReadOnlySource::new(file)), MediaSourceStreamOptions::default());
 
         let meta_opts: MetadataOptions = MetadataOptions::default();
@@ -109,7 +109,7 @@ impl Decoder for RustyDecoder {
         Ok(())
     }
 
-    fn seek_relative(&mut self, pos: Duration) -> Result<(), DecoderError> {
+    fn seek_relative(&mut self, _pos: Duration) -> Result<(), DecoderError> {
         todo!()
     }
 

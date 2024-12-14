@@ -28,7 +28,7 @@ pub enum InternalMessage {
     Volume(Volume),
 
     /// Seek to a specified duration
-    Seek(Duration),
+    Seek(Duration, bool),
 
     /// Set up the thread with a new stream
     LoadNew(Uri<String>),
@@ -73,8 +73,8 @@ pub struct Prismriver {
     internal_send: channel::Sender<InternalMessage>,
     internal_recvback: channel::Receiver<Result<(), PrismError>>,
 
-    uri_current: Option<Uri<String>>,
-    uri_next: Option<Uri<String>>,
+    _uri_current: Option<Uri<String>>,
+    _uri_next: Option<Uri<String>>,
 }
 
 impl Default for Prismriver {
@@ -114,8 +114,8 @@ impl Prismriver {
             duration,
             volume: Volume::default(),
             state,
-            uri_current: None,
-            uri_next: None,
+            _uri_current: None,
+            _uri_next: None,
             internal_send,
             internal_recvback
         }
@@ -163,7 +163,12 @@ impl Prismriver {
     }
 
     pub fn seek(&mut self, pos: Duration) -> Result<(), PrismError> {
-        self.send_recv(InternalMessage::Seek(pos))
+        self.send_recv(InternalMessage::Seek(pos, false))
+    }
+
+    pub fn seek_relative(&mut self, pos: Duration) -> Result<(), PrismError> {
+        self.send_recv(InternalMessage::Seek(pos, true)).unwrap();
+        todo!()
     }
 
     pub fn position(&mut self) -> Option<Duration> {
@@ -182,7 +187,7 @@ impl Drop for Prismriver {
 }
 
 const LOOP_DELAY_US: Duration = Duration::from_micros(5000);
-pub const BUFFER_MAX: u64 = 240_000 / 4;
+pub const BUFFER_MAX: u64 = 240_000 / size_of::<f32>() as u64; // 240 KB
 
 struct PlayerState {
     audio_output: Option<Box<dyn AudioOutput>>,
@@ -283,9 +288,12 @@ fn player_loop(
                     }
                     info!("volume is now {:0.0}%", v.as_f32() * 100.0);
                 }
-                InternalMessage::Seek(p) => {
+                InternalMessage::Seek(p, relative) => {
                     match if let Some(d) = p_state.decoder.as_mut() {
-                        d.seek_absolute(p)
+                        match relative {
+                            true => d.seek_relative(p),
+                            false => d.seek_absolute(p),
+                        }
                     } else {
                         p_state.internal_send.send(Err(PrismError::NothingLoaded)).unwrap();
                         continue;
@@ -348,7 +356,7 @@ fn player_loop(
                         continue 'external;
                     },
                 };
-                p_state.audio_output.as_mut().unwrap().write(&output_buffer[0..len]).unwrap();
+                p_state.audio_output.as_mut().unwrap().write(&output_buffer[0..len]);
             }
 
             *p_state.duration.write().unwrap() = p_state.decoder.as_mut().unwrap().duration();
@@ -368,7 +376,7 @@ pub fn path_to_uri<P: AsRef<Path>>(path: &P) -> Result<Uri::<String>, Box<dyn st
     let mut percent_path: EString<encoder::Path> = EString::new();
     percent_path.encode::<encoder::Path>(&path_string.to_string());
     let uri = Uri::<String>::builder()
-        .scheme(&Scheme::new_or_panic("file"))
+        .scheme(Scheme::new_or_panic("file"))
         .path(&percent_path)
         .build()?;
 

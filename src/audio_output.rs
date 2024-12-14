@@ -47,7 +47,7 @@ pub fn interleave(planar: &[f32], channels: u16) -> Vec<f32> {
 
 pub trait AudioOutput {
     /// Write some samples into the buffer to be played
-    fn write(&mut self, decoded: &[f32]) -> Result<(), ()>;
+    fn write(&mut self, decoded: &[f32]);
 
     /// Flush the remaining samples from the resampler
     fn flush(&mut self);
@@ -140,11 +140,11 @@ impl AudioOutputInner {
 }
 
 impl AudioOutput for AudioOutputInner {
-    fn write(&mut self, decoded: &[f32]) -> Result<(), ()> {
+    fn write(&mut self, decoded: &[f32]) {
         // Do nothing if there are no audio frames.
         if decoded.is_empty() {
             warn!("decoded length was 0");
-            return Ok(());
+            return;
         }
 
         if !self.state {
@@ -160,7 +160,7 @@ impl AudioOutput for AudioOutputInner {
         let processed_samples = if let Some(resampler) = &mut self.resampler {
             match resampler.process(&decoded) {
                 Ok(resampled) => resampled,
-                Err(_) => return Ok(()),
+                Err(_) => return,
             }
         } else {
             decoded.to_vec()
@@ -176,8 +176,6 @@ impl AudioOutput for AudioOutputInner {
         while let Some(written) = self.ring_buf_producer.write_blocking(&amplified_samples[offset..]) {
             offset += written;
         }
-
-        Ok(())
     }
 
     fn seek_flush(&mut self) {
