@@ -4,14 +4,12 @@ use thiserror::Error;
 // Mods and stuff -----------
 // --------------------------
 #[cfg(feature = "symphonia")]
-mod rusty;
-#[cfg(feature = "symphonia")]
-pub use rusty::RustyDecoder;
+pub mod rusty;
 
 #[cfg(feature = "ffmpeg")]
-mod ffmpeg;
-#[cfg(feature = "ffmpeg")]
-pub use ffmpeg::FfmpegDecoder;
+pub mod ffmpeg;
+// End of mods and stuff ----
+// --------------------------
 
 #[derive(Error, Debug)]
 pub enum DecoderError {
@@ -40,11 +38,19 @@ pub trait Decoder {
     /// number of bytes written
     fn next_packet_to_buf(&mut self, buf: &mut [f32]) -> Result<usize, DecoderError>;
 
-    fn seek(&mut self, pos: Duration) -> Result<(), DecoderError>;
+    /// Seek to the desired absolute position in the stream.
+    fn seek_absolute(&mut self, pos: Duration) -> Result<(), DecoderError>;
 
+    /// Seek to the desired relative position in the stream.
+    fn seek_relative(&mut self, pos: Duration) -> Result<(), DecoderError>;
+
+    /// Get the current playback position, if it is known
     fn position(&self) -> Option<Duration>;
+
+    /// Get the current file's duration, if it is known
     fn duration(&self) -> Option<Duration>;
 
+    /// Get some useful parameters about the stream
     fn params(&self) -> StreamParams;
 }
 
@@ -61,7 +67,11 @@ impl DummyDecoder {
 }
 
 impl Decoder for DummyDecoder {
-    fn seek(&mut self, _pos: Duration) -> Result<(), DecoderError> {
+    fn seek_absolute(&mut self, _pos: Duration) -> Result<(), DecoderError> {
+        Ok(())
+    }
+
+    fn seek_relative(&mut self, _pos: Duration) -> Result<(), DecoderError> {
         Ok(())
     }
 

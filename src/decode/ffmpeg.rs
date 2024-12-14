@@ -1,6 +1,6 @@
 use std::{path::PathBuf, sync::{Arc, RwLock}, thread, time::Duration};
 use crossbeam::channel::{Receiver, Sender};
-use ffmpeg_next::{codec::{self, Context}, filter, format::sample::{self, Type}, frame, media, rescale, Rescale as _};
+use ffmpeg_next::{codec::{self, Context}, decoder::Audio, filter, format::{context::Input, sample::{self, Type}}, frame, media, rescale, Rational, Rescale as _};
 use fluent_uri::Uri;
 use log::info;
 
@@ -21,6 +21,7 @@ impl FfmpegDecoder {
     pub fn new(input: Uri<String>) -> Result<Self, DecoderError> {
         ffmpeg_next::init()
             .map_err(|e| DecoderError::InternalError(e.to_string()))?;
+        ffmpeg_next::log::set_level(ffmpeg_next::log::Level::Quiet);
 
         let mut ictx = if input.scheme().as_str().starts_with("http") {
             info!("playing back from network source");
@@ -33,7 +34,7 @@ impl FfmpegDecoder {
         };
 
 
-        let input = ictx
+        let stream = ictx
             .streams()
             .best(media::Type::Audio)
             .ok_or(DecoderError::InternalError("Could not find audio stream".to_string()))?;
@@ -42,16 +43,15 @@ impl FfmpegDecoder {
         let duration = Some(Duration::from_millis(ictx.duration().rescale(rescale::TIME_BASE, (1, 1000)) as u64));
         let position = Arc::new(RwLock::new(None));
 
-        let context = Context::from_parameters(input.parameters()).unwrap();
+        let context = Context::from_parameters(stream.parameters()).unwrap();
         let mut decoder = context.decoder().audio().unwrap();
-        decoder.set_parameters(input.parameters()).unwrap();
+        decoder.set_parameters(stream.parameters()).unwrap();
+        decoder.set_time_base(rescale::TIME_BASE);
 
         let rate = match decoder.rate() {
             r if r <= 96000 => decoder.rate(),
             _ => 48000,
         };
-
-        dbg!(decoder.frame_size());
 
         let stream_params = StreamParams {
             rate,
@@ -63,45 +63,24 @@ impl FfmpegDecoder {
             },
         };
 
-        let mut filter = filter(&decoder, stream_params).unwrap();
+        // Set up the filter for resampling and sample format
+        let filter = filter(&decoder, stream_params).unwrap();
 
         let (seek_send, seek_recv) = crossbeam::channel::bounded::<i64>(1);
         let (data_send, data_recv) = crossbeam::channel::bounded(0);
         thread::spawn({
             let position = Arc::clone(&position);
+            let input_time_base = stream.time_base();
             move || {
-                while let Some((_stream, packet)) = ictx.packets().next() {
-                    // Decode the frame
-                    let mut decoded = frame::Audio::empty();
-                    decoder.send_packet(&packet).unwrap_or_default();
-                    while decoder.receive_frame(&mut decoded).is_ok() {
-                        // Filter the frame to the proper format
-                        let mut filtered = frame::Audio::empty();
-                        filter.get("in").unwrap().source().add(&decoded).unwrap();
-                        while filter.get("out").unwrap().sink().frame(&mut filtered).is_ok() {
-                            if decoded.timestamp().is_some() {
-                                dbg!(decoded.timestamp());
-                                let pos = Some(Duration::from_millis(
-                                    decoded.timestamp().unwrap().rescale(rescale::TIME_BASE, (1, 1000)) as u64)
-                                );
-                                *position.write().unwrap() = pos;
-                            }
-
-                            let output: Vec<f32> = (0..filtered.planes()).flat_map(|p| filtered.plane::<f32>(p)).copied().collect();
-
-                            data_send.send(output.as_slice().into()).unwrap();
-                            drop(output);
-                        }
-                    }
-
-                    // Check for seek events and seek on them
-                    if let Some(s) = seek_recv.try_recv().ok() {
-                        let position = s.rescale((1, 1000), rescale::TIME_BASE);
-                        ictx.seek(position, ..position).unwrap();
-                        decoder.flush();
-                    }
-                }
-                decoder.send_eof().unwrap();
+                decode_loop(
+                    ictx,
+                    decoder,
+                    filter,
+                    input_time_base,
+                    position,
+                    data_send,
+                    seek_recv,
+                );
             }
         });
 
@@ -127,9 +106,13 @@ impl Decoder for FfmpegDecoder {
         Ok(data.len())
     }
 
-    fn seek(&mut self, pos: Duration) -> Result<(), DecoderError> {
+    fn seek_absolute(&mut self, pos: Duration) -> Result<(), DecoderError> {
         self.seek_send.send(pos.as_millis() as i64).unwrap();
         Ok(())
+    }
+
+    fn seek_relative(&mut self, pos: Duration) -> Result<(), DecoderError> {
+        todo!()
     }
 
     fn position(&self) -> Option<Duration> {
@@ -178,4 +161,49 @@ fn filter(
     filter.validate()?;
 
     Ok(filter)
+}
+
+fn decode_loop(
+    mut ictx: Input,
+    mut decoder: Audio,
+    mut filter: filter::Graph,
+    input_time_base: Rational,
+    position: Arc<RwLock<Option<Duration>>>,
+    data_send: Sender<Arc<[f32]>>,
+    seek_recv: Receiver<i64>,
+) {
+    while let Some((_stream, packet)) = ictx.packets().next() {
+        // Decode the frame
+        let mut decoded = frame::Audio::empty();
+        decoder.send_packet(&packet).unwrap_or_default();
+        while decoder.receive_frame(&mut decoded).is_ok() {
+            // Filter the frame to the proper format
+            let mut filtered = frame::Audio::empty();
+            filter.get("in").unwrap().source().add(&decoded).unwrap();
+
+            while filter.get("out").unwrap().sink().frame(&mut filtered).is_ok() {
+                if filtered.timestamp().is_some() {
+                    let pos = Some(Duration::from_millis(
+                        filtered.timestamp()
+                            .unwrap()
+                            .rescale(input_time_base, (1, 1000)) as u64
+                    ));
+                    *position.write().unwrap() = pos;
+                }
+
+                let output: Vec<f32> = (0..filtered.planes()).flat_map(|p| filtered.plane::<f32>(p)).copied().collect();
+
+                data_send.send(output.as_slice().into()).unwrap();
+                drop(output);
+            }
+        }
+
+        // Check for seek events and seek on them
+        if let Some(s) = seek_recv.try_recv().ok() {
+            let position = s.rescale((1, 1000), rescale::TIME_BASE);
+            ictx.seek(position, ..position).unwrap();
+            decoder.flush();
+        }
+    }
+    decoder.send_eof().unwrap();
 }

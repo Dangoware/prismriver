@@ -92,7 +92,7 @@ impl RustyDecoder {
 }
 
 impl Decoder for RustyDecoder {
-    fn seek(&mut self, pos: Duration) -> Result<(), DecoderError> {
+    fn seek_absolute(&mut self, pos: Duration) -> Result<(), DecoderError> {
         self.timestamp = match self.format_reader.seek(
             SeekMode::Accurate,
             SeekTo::Time {
@@ -107,6 +107,10 @@ impl Decoder for RustyDecoder {
         self.decoder.reset();
 
         Ok(())
+    }
+
+    fn seek_relative(&mut self, pos: Duration) -> Result<(), DecoderError> {
+        todo!()
     }
 
     fn position(&self) -> Option<Duration> {

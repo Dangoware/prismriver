@@ -1,5 +1,4 @@
 use std::io::{self, Write};
-use std::path::PathBuf;
 use std::{thread::sleep, time::Duration};
 
 use fluent_uri::Uri;

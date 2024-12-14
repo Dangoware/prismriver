@@ -1,7 +1,7 @@
 mod audio_output;
 mod decode;
 
-use std::{io, path::{Path, PathBuf}, sync::{Arc, RwLock}, thread, time::{Duration, Instant}};
+use std::{path::{Path, PathBuf}, sync::{Arc, RwLock}, thread, time::{Duration, Instant}};
 
 pub use audio_output::{AudioOutput, Volume};
 use cpal::{traits::HostTrait as _, Device};
@@ -11,9 +11,9 @@ use fluent_uri::{component::Scheme, encoding::{encoder, EString}, Uri};
 use log::{info, warn};
 
 #[cfg(feature = "symphonia")]
-use decode::RustyDecoder;
+use decode::rusty::RustyDecoder;
 #[cfg(feature = "ffmpeg")]
-use decode::FfmpegDecoder;
+use decode::ffmpeg::FfmpegDecoder;
 
 #[derive(Debug, Clone, Copy)]
 pub enum Command {
@@ -224,10 +224,11 @@ fn player_loop(
     };
 
     // Set thread priority to avoid stutters
-    #[cfg(target_os = "windows")]
-    {
+    #[cfg(target_os = "windows")] {
         use thread_priority::*;
-        if set_current_thread_priority(ThreadPriority::Os(WinAPIThreadPriority::TimeCritical.into())).is_err() {
+        if set_current_thread_priority(
+            ThreadPriority::Os(WinAPIThreadPriority::TimeCritical.into())
+        ).is_err() {
             warn!("failed to set playback thread priority");
         };
     }
@@ -258,10 +259,13 @@ fn player_loop(
                             "http" | "https" => Some(Box::new(FfmpegDecoder::new(f).unwrap())),
                             #[cfg(feature = "symphonia")]
                             "file" => Some(Box::new(RustyDecoder::new(&f).unwrap())),
+                            #[cfg(not(any(feature = "symphonia", feature = "ffmpeg")))]
                             _ => {
                                 log::error!("using dummmy decoder, there will be no decoding and no output");
                                 Some(Box::new(decode::DummyDecoder::new()))
                             }
+                            #[cfg(any(feature = "symphonia", feature = "ffmpeg"))]
+                            _ => panic!("No decoder available for the selected format")
                         }
                     };
 
@@ -281,7 +285,7 @@ fn player_loop(
                 }
                 InternalMessage::Seek(p) => {
                     match if let Some(d) = p_state.decoder.as_mut() {
-                        d.seek(p)
+                        d.seek_absolute(p)
                     } else {
                         p_state.internal_send.send(Err(PrismError::NothingLoaded)).unwrap();
                         continue;
@@ -336,7 +340,7 @@ fn player_loop(
                         continue 'external;
                     },
                     Err(de) => {
-                        // Fatal decoder error! TODO: Communicate this somehow
+                        // Fatal decoder error
                         let _ = p_state.internal_send.send(Err(PrismError::DecoderError(de)));
                         p_state.decoder = None;
                         *p_state.state.write().unwrap() = State::Stopped;
