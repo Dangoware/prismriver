@@ -1,8 +1,8 @@
-use std::{path::PathBuf, sync::{Arc, RwLock}, thread, time::Duration};
+use std::{collections::HashMap, path::PathBuf, sync::{Arc, RwLock}, thread, time::Duration};
 use crossbeam::channel::{Receiver, Sender};
 use ffmpeg_next::{codec::{self, Context}, decoder::Audio, filter, format::{context::Input, sample::{self, Type}}, frame, media, rescale, Rational, Rescale as _};
 use fluent_uri::Uri;
-use log::info;
+use log::{info, warn};
 
 use crate::uri_to_path;
 
@@ -15,13 +15,15 @@ pub struct FfmpegDecoder {
 
     duration: Option<Duration>,
     position: Arc<RwLock<Option<Duration>>>,
+
+    metadata: Arc<RwLock<HashMap<String, String>>>,
 }
 
 impl FfmpegDecoder {
     pub fn new(input: Uri<String>) -> Result<Self, DecoderError> {
         ffmpeg_next::init()
             .map_err(|e| DecoderError::InternalError(e.to_string()))?;
-        ffmpeg_next::log::set_level(ffmpeg_next::log::Level::Quiet);
+        //ffmpeg_next::log::set_level(ffmpeg_next::log::Level::Verbose);
 
         let ictx = if input.scheme().as_str().starts_with("http") {
             info!("playing back from network source");
@@ -33,6 +35,11 @@ impl FfmpegDecoder {
                 .map_err(|e| DecoderError::InternalError(e.to_string()))?
         };
 
+        let mut meta_map = HashMap::new();
+        for (k, v) in &ictx.metadata() {
+            meta_map.insert(k.to_string(), v.to_string());
+        }
+        let metadata = Arc::new(RwLock::new(meta_map));
 
         let stream = ictx
             .streams()
@@ -40,7 +47,12 @@ impl FfmpegDecoder {
             .ok_or(DecoderError::InternalError("Could not find audio stream".to_string()))?;
 
         // Duration in ms
-        let duration = Some(Duration::from_millis(ictx.duration().rescale(rescale::TIME_BASE, (1, 1000)) as u64));
+        let duration = if ictx.duration() <= i64::MIN || ictx.duration() >= i64::MAX {
+            warn!("duration is very far out of range, setting to None");
+            None
+        } else {
+            Some(Duration::from_millis(ictx.duration().rescale(rescale::TIME_BASE, (1, 1000)) as u64))
+        };
         let position = Arc::new(RwLock::new(None));
 
         let context = Context::from_parameters(stream.parameters()).unwrap();
@@ -71,6 +83,7 @@ impl FfmpegDecoder {
         thread::spawn({
             let position = Arc::clone(&position);
             let input_time_base = stream.time_base();
+            let metadata = Arc::clone(&metadata);
             move || {
                 decode_loop(
                     ictx,
@@ -80,6 +93,7 @@ impl FfmpegDecoder {
                     position,
                     data_send,
                     seek_recv,
+                    metadata,
                 );
             }
         });
@@ -91,6 +105,8 @@ impl FfmpegDecoder {
 
             duration,
             position,
+
+            metadata,
         })
     }
 }
@@ -126,6 +142,10 @@ impl Decoder for FfmpegDecoder {
     fn params(&self) -> StreamParams {
         self.stream_params
     }
+
+    fn metadata(&self) -> HashMap<String, String> {
+        self.metadata.read().unwrap().clone()
+    }
 }
 
 fn filter(
@@ -153,7 +173,7 @@ fn filter(
         let mut out = filter.get("out").unwrap();
 
         out.set_sample_format(sample::Sample::F32(Type::Planar));
-        out.set_channel_layout(ffmpeg_next::ChannelLayout::HEXADECAGONAL);
+        //out.set_channel_layout(ffmpeg_next::ChannelLayout::STEREO);
         out.set_sample_rate(params.rate);
     }
 
@@ -171,8 +191,25 @@ fn decode_loop(
     position: Arc<RwLock<Option<Duration>>>,
     data_send: Sender<Arc<[f32]>>,
     seek_recv: Receiver<i64>,
+    metadata: Arc<RwLock<HashMap<String, String>>>,
 ) {
-    while let Some((_stream, packet)) = ictx.packets().next() {
+    let mut local_metadata = metadata.read().unwrap().clone();
+    let mut temp_map = HashMap::new();
+
+    while let Some((stream, packet)) = ictx.packets().next() {
+        temp_map.clear();
+        for (k, v) in stream.metadata().iter() {
+            temp_map.insert(k.to_string(), v.to_string());
+        }
+        if temp_map != local_metadata {
+            let mut ext_meta = metadata.write().unwrap();
+            temp_map.iter().for_each(|(k, v)| {
+                ext_meta.insert(k.to_string(), v.to_string());
+            });
+            info!("New metadata: {:#?}", &ext_meta);
+            local_metadata = temp_map.clone();
+        }
+
         // Decode the frame
         let mut decoded = frame::Audio::empty();
         decoder.send_packet(&packet).unwrap_or_default();

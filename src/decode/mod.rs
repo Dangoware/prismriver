@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{collections::HashMap, time::Duration};
 use thiserror::Error;
 
 // Mods and stuff -----------
@@ -52,6 +52,11 @@ pub trait Decoder {
 
     /// Get some useful parameters about the stream
     fn params(&self) -> StreamParams;
+
+    /// Get metadata from the stream.
+    ///
+    /// If there is none, the map will be empty.
+    fn metadata(&self) -> HashMap<String, String>;
 }
 
 #[cfg(not(any(feature = "symphonia", feature = "ffmpeg")))]
@@ -100,6 +105,10 @@ pub mod dummy {
                 channels: 2,
                 packet_size: 4096
             }
+        }
+
+        fn metadta(&self) -> HashMap<String, String> {
+            HashMap::new()
         }
     }
 }

@@ -1,4 +1,4 @@
-use std::{fs::File, time::Duration};
+use std::{collections::HashMap, fs::File, time::Duration};
 
 use fluent_uri::Uri;
 use log::{info, warn};
@@ -92,40 +92,6 @@ impl RustyDecoder {
 }
 
 impl Decoder for RustyDecoder {
-    fn seek_absolute(&mut self, pos: Duration) -> Result<(), DecoderError> {
-        self.timestamp = match self.format_reader.seek(
-            SeekMode::Accurate,
-            SeekTo::Time {
-                time: Time::from(pos),
-                track_id: Some(self.track_id),
-            }
-        ) {
-            Ok(ts) => ts.actual_ts,
-            Err(e) => return Err(DecoderError::InternalError(e.to_string())),
-        };
-
-        self.decoder.reset();
-
-        Ok(())
-    }
-
-    fn seek_relative(&mut self, _pos: Duration) -> Result<(), DecoderError> {
-        todo!()
-    }
-
-    fn position(&self) -> Option<Duration> {
-        self.params.time_base.map(|t| t.calc_time(self.timestamp).into())
-    }
-
-    fn duration(&self) -> Option<Duration> {
-        let dur = self.params.n_frames.map(|frames| self.params.start_ts + frames);
-        if let Some(t) = self.params.time_base {
-            dur.map(|d| t.calc_time(d).into())
-        } else {
-            None
-        }
-    }
-
     fn next_packet_to_buf(&mut self, buf: &mut [f32]) -> Result<usize, DecoderError> {
         let mut offset = 0;
         loop {
@@ -196,11 +162,49 @@ impl Decoder for RustyDecoder {
         Ok(offset)
     }
 
+    fn seek_absolute(&mut self, pos: Duration) -> Result<(), DecoderError> {
+        self.timestamp = match self.format_reader.seek(
+            SeekMode::Accurate,
+            SeekTo::Time {
+                time: Time::from(pos),
+                track_id: Some(self.track_id),
+            }
+        ) {
+            Ok(ts) => ts.actual_ts,
+            Err(e) => return Err(DecoderError::InternalError(e.to_string())),
+        };
+
+        self.decoder.reset();
+
+        Ok(())
+    }
+
+    fn seek_relative(&mut self, _pos: Duration) -> Result<(), DecoderError> {
+        todo!()
+    }
+
+    fn position(&self) -> Option<Duration> {
+        self.params.time_base.map(|t| t.calc_time(self.timestamp).into())
+    }
+
+    fn duration(&self) -> Option<Duration> {
+        let dur = self.params.n_frames.map(|frames| self.params.start_ts + frames);
+        if let Some(t) = self.params.time_base {
+            dur.map(|d| t.calc_time(d).into())
+        } else {
+            None
+        }
+    }
+
     fn params(&self) -> StreamParams {
         StreamParams {
             rate: self.spec.rate,
             channels: self.spec.channels.count() as u16,
             packet_size: self.params.max_frames_per_packet.unwrap_or(4096),
         }
+    }
+
+    fn metadata(&self) -> HashMap<String, String> {
+        todo!()
     }
 }

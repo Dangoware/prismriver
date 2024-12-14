@@ -9,7 +9,7 @@ use prismriver::Prismriver;
 fn main() {
     colog::init();
     let mut player = Prismriver::new();
-    player.set_volume(Volume::new(0.4));
+    player.set_volume(Volume::new(0.3));
 
     let args: Vec<String> = std::env::args().skip(1).collect();
 
