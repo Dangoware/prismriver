@@ -1,4 +1,5 @@
-use std::{collections::HashMap, time::Duration};
+use std::collections::HashMap;
+use chrono::Duration;
 use thiserror::Error;
 
 // Mods and stuff -----------
@@ -41,16 +42,16 @@ pub trait Decoder {
     /// Seek to the desired absolute position in the stream.
     fn seek_absolute(&mut self, pos: Duration) -> Result<(), DecoderError>;
 
-    /// Seek to the desired relative position in the stream.
+    /// Seek to a position relative to the current playback position.
     fn seek_relative(&mut self, pos: Duration) -> Result<(), DecoderError>;
 
-    /// Get the current playback position, if it is known
+    /// Get the current playback position, if it is known.
     fn position(&self) -> Option<Duration>;
 
-    /// Get the current file's duration, if it is known
+    /// Get the current duration, if it is known.
     fn duration(&self) -> Option<Duration>;
 
-    /// Get some useful parameters about the stream
+    /// Get some useful parameters about the stream.
     fn params(&self) -> StreamParams;
 
     /// Get metadata from the stream.
@@ -59,9 +60,11 @@ pub trait Decoder {
     fn metadata(&self) -> HashMap<String, String>;
 }
 
-#[cfg(not(any(feature = "symphonia", feature = "ffmpeg")))]
 pub mod dummy {
-    use std::time::Duration;
+    use std::time::Instant;
+    use std::collections::HashMap;
+
+    use chrono::Duration;
 
     use super::{Decoder, DecoderError, StreamParams};
 
@@ -87,7 +90,7 @@ pub mod dummy {
         }
 
         fn position(&self) -> Option<Duration> {
-            Some(self.instant.elapsed())
+            Some(Duration::from_std(self.instant.elapsed()).unwrap())
         }
 
         fn duration(&self) -> Option<Duration> {
@@ -107,7 +110,7 @@ pub mod dummy {
             }
         }
 
-        fn metadta(&self) -> HashMap<String, String> {
+        fn metadata(&self) -> HashMap<String, String> {
             HashMap::new()
         }
     }

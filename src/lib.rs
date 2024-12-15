@@ -1,19 +1,16 @@
 mod audio_output;
 mod decode;
+pub mod utils;
 
-use std::{path::{Path, PathBuf}, sync::{Arc, RwLock}, thread, time::{Duration, Instant}};
+use std::{collections::HashMap, sync::{Arc, RwLock}, thread, time::Instant};
 
 pub use audio_output::{AudioOutput, Volume};
+use chrono::Duration;
 use cpal::{traits::HostTrait as _, Device};
 use crossbeam::channel::{self, Receiver, Sender};
 use decode::Decoder;
-use fluent_uri::{component::Scheme, encoding::{encoder, EString}, Uri};
+use fluent_uri::Uri;
 use log::{info, warn};
-
-#[cfg(feature = "symphonia")]
-use decode::rusty::RustyDecoder;
-#[cfg(feature = "ffmpeg")]
-use decode::ffmpeg::FfmpegDecoder;
 
 #[derive(Debug, Clone, Copy)]
 pub enum Command {
@@ -56,6 +53,9 @@ pub enum PrismError {
     #[error("Internal decoder error {}", 0)]
     DecoderError(#[from] decode::DecoderError),
 
+    #[error("There is no decoder capable of playing the selected format")]
+    UnknownFormat,
+
     #[error("Nothing is loaded, the operation is invalid")]
     NothingLoaded,
 
@@ -75,6 +75,8 @@ pub struct Prismriver {
 
     _uri_current: Option<Uri<String>>,
     _uri_next: Option<Uri<String>>,
+
+    metadata: Arc<RwLock<HashMap<String, String>>>,
 }
 
 impl Default for Prismriver {
@@ -94,16 +96,19 @@ impl Prismriver {
         let state = Arc::new(RwLock::new(State::Stopped));
         let position = Arc::new(RwLock::new(None));
         let duration = Arc::new(RwLock::new(None));
+        let metadata = Arc::new(RwLock::new(HashMap::new()));
         thread::Builder::new().name("audio_player".to_string()).spawn({
             let state = Arc::clone(&state);
             let position = Arc::clone(&position);
             let duration = Arc::clone(&duration);
+            let metadata = Arc::clone(&metadata);
             move || player_loop(
                 internal_recv,
                 internal_sendback,
                 state,
                 position,
-                duration
+                duration,
+                metadata,
             )
         }).unwrap();
 
@@ -117,7 +122,8 @@ impl Prismriver {
             _uri_current: None,
             _uri_next: None,
             internal_send,
-            internal_recvback
+            internal_recvback,
+            metadata,
         }
     }
 
@@ -162,11 +168,14 @@ impl Prismriver {
         *self.state.write().unwrap() = state
     }
 
-    pub fn seek(&mut self, pos: Duration) -> Result<(), PrismError> {
+    /// Seek relative to the current position.
+    ///
+    /// The position is capped at the duration of the song, and zero.
+    pub fn seek_to(&mut self, pos: chrono::Duration) -> Result<(), PrismError> {
         self.send_recv(InternalMessage::Seek(pos, false))
     }
 
-    pub fn seek_relative(&mut self, pos: Duration) -> Result<(), PrismError> {
+    pub fn seek_by(&mut self, pos: chrono::Duration) -> Result<(), PrismError> {
         self.send_recv(InternalMessage::Seek(pos, true)).unwrap();
         todo!()
     }
@@ -178,6 +187,10 @@ impl Prismriver {
     pub fn duration(&mut self) -> Option<Duration> {
         *self.duration.read().unwrap()
     }
+
+    pub fn metadata(&mut self) -> HashMap<String, String> {
+        self.metadata.read().unwrap().clone()
+    }
 }
 
 impl Drop for Prismriver {
@@ -186,7 +199,7 @@ impl Drop for Prismriver {
     }
 }
 
-const LOOP_DELAY_US: Duration = Duration::from_micros(5000);
+const LOOP_DELAY_US: std::time::Duration = std::time::Duration::from_micros(5000);
 pub const BUFFER_MAX: u64 = 240_000 / size_of::<f32>() as u64; // 240 KB
 
 struct PlayerState {
@@ -204,6 +217,8 @@ struct PlayerState {
     state: Arc<RwLock<State>>,
     position: Arc<RwLock<Option<Duration>>>,
     duration: Arc<RwLock<Option<Duration>>>,
+
+    metadata: Arc<RwLock<HashMap<String, String>>>,
 }
 
 fn player_loop(
@@ -212,6 +227,7 @@ fn player_loop(
     state: Arc<RwLock<State>>,
     position: Arc<RwLock<Option<Duration>>>,
     duration: Arc<RwLock<Option<Duration>>>,
+    metadata: Arc<RwLock<HashMap<String, String>>>,
 ) {
     let mut p_state = PlayerState {
         internal_recv,
@@ -226,6 +242,8 @@ fn player_loop(
         volume: Volume::default(),
         next_source: None,
         stream_params: None,
+
+        metadata,
     };
 
     // Set thread priority to avoid stutters
@@ -256,27 +274,17 @@ fn player_loop(
                         panic!("This shouldn't be possible!")
                     }
 
-                    // TODO: Perform format detection for selection and perform
-                    // error handling
-                    p_state.decoder = {
-                        match f.scheme().as_str() {
-                            #[cfg(feature = "ffmpeg")]
-                            "http" | "https" => Some(Box::new(FfmpegDecoder::new(f).unwrap())),
-                            #[cfg(feature = "symphonia")]
-                            "file" => Some(Box::new(RustyDecoder::new(&f).unwrap())),
-                            #[cfg(not(any(feature = "symphonia", feature = "ffmpeg")))]
-                            _ => {
-                                log::error!("using dummmy decoder, there will be no decoding and no output");
-                                Some(Box::new(decode::DummyDecoder::new()))
-                            }
-                            #[cfg(any(feature = "symphonia", feature = "ffmpeg"))]
-                            _ => panic!("No decoder available for the selected format")
-                        }
-                    };
+                    // Try to select a format decoder
+                    p_state.decoder = utils::pick_format(&f);
 
-                    p_state.stream_params = Some(p_state.decoder.as_ref().unwrap().params());
-                    p_state.audio_output.as_mut().unwrap().update_params(p_state.stream_params.unwrap());
-                    p_state.internal_send.try_send(Ok(())).unwrap();
+                    if let Some(d) = p_state.decoder.as_ref() {
+                        p_state.stream_params = Some(d.params());
+                        p_state.audio_output.as_mut().unwrap().update_params(p_state.stream_params.unwrap());
+                        p_state.internal_send.try_send(Ok(())).unwrap();
+                    } else {
+                        warn!("could not determine decoder to use for format");
+                        p_state.internal_send.try_send(Err(PrismError::UnknownFormat)).unwrap();
+                    }
                 },
                 InternalMessage::LoadNext(f) => {
                     p_state.next_source = Some(f)
@@ -359,34 +367,13 @@ fn player_loop(
                 p_state.audio_output.as_mut().unwrap().write(&output_buffer[0..len]);
             }
 
-            *p_state.duration.write().unwrap() = p_state.decoder.as_mut().unwrap().duration();
-            *p_state.position.write().unwrap() = p_state.decoder.as_mut().unwrap().position();
+            *p_state.duration.write().unwrap() = p_state.decoder.as_ref().unwrap().duration();
+            *p_state.position.write().unwrap() = p_state.decoder.as_ref().unwrap().position();
+            *p_state.metadata.write().unwrap() = p_state.decoder.as_ref().unwrap().metadata();
             //info!("buffer {:0.0}%", (p_state.audio_output.as_mut().unwrap().buffer_level().0 as f32 / p_state.audio_output.as_mut().unwrap().buffer_level().1 as f32) * 100.0);
         }
 
         // Prevent this from hogging a core
         thread::sleep(LOOP_DELAY_US);
     }
-}
-
-pub fn path_to_uri<P: AsRef<Path>>(path: &P) -> Result<Uri::<String>, Box<dyn std::error::Error>> {
-    let canonicalized = path.as_ref().canonicalize().unwrap();
-    let path_string = canonicalized.to_string_lossy();
-
-    let mut percent_path: EString<encoder::Path> = EString::new();
-    percent_path.encode::<encoder::Path>(&path_string.to_string());
-    let uri = Uri::<String>::builder()
-        .scheme(Scheme::new_or_panic("file"))
-        .path(&percent_path)
-        .build()?;
-
-    Ok(uri)
-}
-
-pub fn uri_to_path(uri: &Uri<String>) -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let estr = uri.path();
-    let decoded = estr.decode().into_string()?;
-    let path = PathBuf::from(decoded.to_string());
-
-    Ok(path)
 }

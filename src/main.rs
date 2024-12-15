@@ -1,8 +1,12 @@
+use std::collections::HashMap;
 use std::io::{self, Write};
-use std::{thread::sleep, time::Duration};
+use std::thread::sleep;
+
+use chrono::Duration;
 
 use fluent_uri::Uri;
-use prismriver::{path_to_uri, State};
+use prismriver::utils::path_to_uri;
+use prismriver::State;
 use prismriver::Volume;
 use prismriver::Prismriver;
 
@@ -12,6 +16,7 @@ fn main() {
     player.set_volume(Volume::new(0.3));
 
     let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut metadata = HashMap::new();
 
     for path in args {
         println!("Loading... {}", path);
@@ -28,8 +33,12 @@ fn main() {
         println!("Playing!");
 
         while player.state() == State::Playing {
-            sleep(Duration::from_millis(100));
-            print_timer(player.position().unwrap_or_default(), player.duration());
+            sleep(std::time::Duration::from_millis(100));
+            print_timer(player.position(), player.duration());
+            if player.metadata() != metadata {
+                metadata = player.metadata();
+                println!("{}", metadata.get("title").cloned().unwrap_or_default());
+            }
         }
         println!();
     }
@@ -37,17 +46,22 @@ fn main() {
     println!("It's so over")
 }
 
-fn print_timer(pos: Duration, len: Option<Duration>) {
+fn print_timer(pos: Option<Duration>, len: Option<Duration>) {
     let len_string = if let Some(l) = len {
-        format!("{:02}:{:02}", l.as_secs() / 60, l.as_secs() % 60)
+        format!("{:02}:{:02}", l.num_seconds() / 60, l.num_seconds() % 60)
+    } else {
+        "--:--".to_string()
+    };
+
+    let pos_string = if let Some(p) = pos {
+        format!("{:02}:{:02}", p.num_seconds() / 60, p.num_seconds() % 60)
     } else {
         "--:--".to_string()
     };
 
     print!(
-        "{:02}:{:02}/{}\r",
-        pos.as_secs() / 60,
-        pos.as_secs() % 60,
+        "{}/{}\r",
+        pos_string,
         len_string,
     );
     io::stdout().flush().unwrap();

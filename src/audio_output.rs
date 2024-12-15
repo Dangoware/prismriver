@@ -36,9 +36,7 @@ pub fn interleave(planar: &[f32], channels: u16) -> Vec<f32> {
         for (ch, s) in frame.iter_mut().enumerate() {
             *s = match planar.get((ch * planar.len() / channels as usize) + i) {
                 Some(s) => *s,
-                None => {
-                    planar[i]
-                },
+                None => planar[i],
             }
         }
     }
@@ -163,7 +161,7 @@ impl AudioOutput for AudioOutputInner {
                 Err(_) => return,
             }
         } else {
-            decoded.to_vec()
+            decoded
         };
 
         // Set the sample amplitude (volume) for every sample
