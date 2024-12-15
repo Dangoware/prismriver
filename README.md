@@ -2,6 +2,13 @@
 Prismriver is an audio library intended for music players which allows for 
 simple, cross platform, high quality audio output.
 
+## Goals
+The overall goal of Prismriver is not to create an all-rust playback 
+library, those already exist. Instead, it's supposed to function similarly
+to Gstreamer, where one frontend can be used to build multimedia applications
+easily. Because of that, being 100% Rust is not a goal of this project,
+except where that would improve cross compilation or development ease.
+
 ## Functionality/Roadmap
 - [x] Cross platform output with CPAL
 - [x] Multiple decoder backends
