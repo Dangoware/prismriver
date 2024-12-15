@@ -6,9 +6,9 @@ use chrono::Duration;
 
 use fluent_uri::Uri;
 use prismriver::utils::path_to_uri;
+use prismriver::Prismriver;
 use prismriver::State;
 use prismriver::Volume;
-use prismriver::Prismriver;
 
 fn main() {
     colog::init();
@@ -59,10 +59,6 @@ fn print_timer(pos: Option<Duration>, len: Option<Duration>) {
         "--:--".to_string()
     };
 
-    print!(
-        "{}/{}\r",
-        pos_string,
-        len_string,
-    );
+    print!("{}/{}\r", pos_string, len_string,);
     io::stdout().flush().unwrap();
 }

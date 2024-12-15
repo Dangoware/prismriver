@@ -1,9 +1,17 @@
 use std::{collections::HashMap, fs::File};
 
+use chrono::Duration;
 use fluent_uri::Uri;
 use log::{info, warn};
-use symphonia::core::{audio::{SampleBuffer, SignalSpec}, codecs::{CodecParameters, DecoderOptions, CODEC_TYPE_NULL}, formats::{FormatOptions, FormatReader, SeekMode, SeekTo}, io::{MediaSourceStream, MediaSourceStreamOptions, ReadOnlySource}, meta::MetadataOptions, probe::Hint, units::Time};
-use chrono::Duration;
+use symphonia::core::{
+    audio::{SampleBuffer, SignalSpec},
+    codecs::{CodecParameters, DecoderOptions, CODEC_TYPE_NULL},
+    formats::{FormatOptions, FormatReader, SeekMode, SeekTo},
+    io::{MediaSourceStream, MediaSourceStreamOptions, ReadOnlySource},
+    meta::MetadataOptions,
+    probe::Hint,
+    units::Time,
+};
 
 use crate::utils::uri_to_path;
 
@@ -23,16 +31,20 @@ pub struct RustyDecoder {
 impl RustyDecoder {
     pub fn new(input: &Uri<String>) -> Result<Self, DecoderError> {
         if input.scheme().as_str() != "file" {
-            return Err(DecoderError::InternalError("Invalid URI".to_string()))
+            return Err(DecoderError::InternalError("Invalid URI".to_string()));
         }
 
         if uri_to_path(input).is_err() {
-            return Err(DecoderError::InternalError("URI was not a valid path".to_string()))
+            return Err(DecoderError::InternalError(
+                "URI was not a valid path".to_string(),
+            ));
         }
 
-
         let file = File::open(uri_to_path(input).unwrap()).unwrap();
-        let mss = MediaSourceStream::new(Box::new(ReadOnlySource::new(file)), MediaSourceStreamOptions::default());
+        let mss = MediaSourceStream::new(
+            Box::new(ReadOnlySource::new(file)),
+            MediaSourceStreamOptions::default(),
+        );
 
         let meta_opts: MetadataOptions = MetadataOptions::default();
         let fmt_opts: FormatOptions = FormatOptions {
@@ -80,7 +92,7 @@ impl RustyDecoder {
         Ok(Self {
             spec: SignalSpec::new(
                 decoder.codec_params().sample_rate.unwrap(),
-                decoder.codec_params().channels.unwrap()
+                decoder.codec_params().channels.unwrap(),
             ),
             params,
             format_reader,
@@ -141,14 +153,18 @@ impl Decoder for RustyDecoder {
                     self.spec = *decoded.spec();
 
                     if self.sample_buf.is_none() {
-                        self.sample_buf = Some(SampleBuffer::new(decoded.capacity() as u64, *decoded.spec()));
+                        self.sample_buf = Some(SampleBuffer::new(
+                            decoded.capacity() as u64,
+                            *decoded.spec(),
+                        ));
                     }
 
                     // Copy the decoded samples to a buffer (why is it this convoluted?)
                     // TODO: This is actually copying the planar samples twice, which is wrong!
                     self.sample_buf.as_mut().unwrap().copy_planar_ref(decoded);
                     let len = self.sample_buf.as_mut().unwrap().len();
-                    buf[offset..offset + len].copy_from_slice(self.sample_buf.as_mut().unwrap().samples());
+                    buf[offset..offset + len]
+                        .copy_from_slice(self.sample_buf.as_mut().unwrap().samples());
                     offset += len;
                 }
                 Err(symphonia::core::errors::Error::IoError(_)) => {
@@ -168,7 +184,7 @@ impl Decoder for RustyDecoder {
             }
 
             // No loop needed, packet was successfully decoded
-            break
+            break;
         }
 
         Ok(offset)
@@ -180,7 +196,7 @@ impl Decoder for RustyDecoder {
             SeekTo::Time {
                 time: Time::from(pos.to_std().unwrap()),
                 track_id: Some(self.track_id),
-            }
+            },
         ) {
             Ok(ts) => ts.actual_ts,
             Err(e) => return Err(DecoderError::InternalError(e.to_string())),
@@ -196,13 +212,16 @@ impl Decoder for RustyDecoder {
     }
 
     fn position(&self) -> Option<Duration> {
-        self.params.time_base.map(|t|
-            Duration::from_std(t.calc_time(self.timestamp).into()).unwrap()
-        )
+        self.params
+            .time_base
+            .map(|t| Duration::from_std(t.calc_time(self.timestamp).into()).unwrap())
     }
 
     fn duration(&self) -> Option<Duration> {
-        let dur = self.params.n_frames.map(|frames| self.params.start_ts + frames);
+        let dur = self
+            .params
+            .n_frames
+            .map(|frames| self.params.start_ts + frames);
         if let Some(t) = self.params.time_base {
             dur.map(|d| Duration::from_std(t.calc_time(d).into()).unwrap())
         } else {

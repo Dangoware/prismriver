@@ -12,7 +12,6 @@ fluent-uri = "0.3"
 log = "0.4"
 rb = "0.4"
 samplerate = { path = "/home/g2/Documents/projects/dangoware/library_stuff/rust-samplerate/" }
-symphonia = { version = "0.5", features = ["all-codecs", "opt-simd"], optional = true }
 thiserror = "2.0"
 thread-priority = "1.2"
 
@@ -27,6 +26,11 @@ features = [
     "build-license-nonfree",
     "build-license-version3"
 ]
+
+[dependencies.symphonia]
+version = "0.5"
+optional = true
+features = ["all-codecs", "opt-simd"]
 
 [features]
 default = ["symphonia"]

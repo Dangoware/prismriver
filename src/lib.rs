@@ -2,7 +2,12 @@ mod audio_output;
 mod decode;
 pub mod utils;
 
-use std::{collections::HashMap, sync::{Arc, RwLock}, thread, time::Instant};
+use std::{
+    collections::HashMap,
+    sync::{Arc, RwLock},
+    thread,
+    time::Instant,
+};
 
 pub use audio_output::{AudioOutput, Volume};
 use chrono::Duration;
@@ -88,7 +93,9 @@ impl Default for Prismriver {
 impl Prismriver {
     pub fn new() -> Prismriver {
         let host = cpal::default_host();
-        let device = host.default_output_device().expect("no output device available");
+        let device = host
+            .default_output_device()
+            .expect("no output device available");
 
         let (internal_send, internal_recv) = channel::bounded(1);
         let (internal_sendback, internal_recvback) = channel::bounded(1);
@@ -97,22 +104,29 @@ impl Prismriver {
         let position = Arc::new(RwLock::new(None));
         let duration = Arc::new(RwLock::new(None));
         let metadata = Arc::new(RwLock::new(HashMap::new()));
-        thread::Builder::new().name("audio_player".to_string()).spawn({
-            let state = Arc::clone(&state);
-            let position = Arc::clone(&position);
-            let duration = Arc::clone(&duration);
-            let metadata = Arc::clone(&metadata);
-            move || player_loop(
-                internal_recv,
-                internal_sendback,
-                state,
-                position,
-                duration,
-                metadata,
-            )
-        }).unwrap();
+        thread::Builder::new()
+            .name("audio_player".to_string())
+            .spawn({
+                let state = Arc::clone(&state);
+                let position = Arc::clone(&position);
+                let duration = Arc::clone(&duration);
+                let metadata = Arc::clone(&metadata);
+                move || {
+                    player_loop(
+                        internal_recv,
+                        internal_sendback,
+                        state,
+                        position,
+                        duration,
+                        metadata,
+                    )
+                }
+            })
+            .unwrap();
 
-        internal_send.send(InternalMessage::NewOutputDevice(device)).unwrap();
+        internal_send
+            .send(InternalMessage::NewOutputDevice(device))
+            .unwrap();
 
         Self {
             position,
@@ -157,7 +171,9 @@ impl Prismriver {
     /// Set the volume
     pub fn set_volume(&mut self, vol: Volume) {
         self.volume = vol;
-        self.internal_send.send(InternalMessage::Volume(vol)).unwrap();
+        self.internal_send
+            .send(InternalMessage::Volume(vol))
+            .unwrap();
     }
 
     pub fn state(&mut self) -> State {
@@ -247,11 +263,14 @@ fn player_loop(
     };
 
     // Set thread priority to avoid stutters
-    #[cfg(target_os = "windows")] {
+    #[cfg(target_os = "windows")]
+    {
         use thread_priority::*;
-        if set_current_thread_priority(
-            ThreadPriority::Os(WinAPIThreadPriority::TimeCritical.into())
-        ).is_err() {
+        if set_current_thread_priority(ThreadPriority::Os(
+            WinAPIThreadPriority::TimeCritical.into(),
+        ))
+        .is_err()
+        {
             warn!("failed to set playback thread priority");
         };
     }
@@ -265,10 +284,11 @@ fn player_loop(
             match r {
                 InternalMessage::NewOutputDevice(device) => {
                     p_state.audio_device = Some(device);
-                    let mut a_out = audio_output::open_output(&p_state.audio_device.unwrap()).unwrap();
+                    let mut a_out =
+                        audio_output::open_output(&p_state.audio_device.unwrap()).unwrap();
                     a_out.set_volume(p_state.volume);
                     p_state.audio_output = Some(a_out);
-                },
+                }
                 InternalMessage::LoadNew(f) => {
                     if p_state.audio_output.is_none() {
                         panic!("This shouldn't be possible!")
@@ -279,16 +299,21 @@ fn player_loop(
 
                     if let Some(d) = p_state.decoder.as_ref() {
                         p_state.stream_params = Some(d.params());
-                        p_state.audio_output.as_mut().unwrap().update_params(p_state.stream_params.unwrap());
+                        p_state
+                            .audio_output
+                            .as_mut()
+                            .unwrap()
+                            .update_params(p_state.stream_params.unwrap());
                         p_state.internal_send.try_send(Ok(())).unwrap();
                     } else {
                         warn!("could not determine decoder to use for format");
-                        p_state.internal_send.try_send(Err(PrismError::UnknownFormat)).unwrap();
+                        p_state
+                            .internal_send
+                            .try_send(Err(PrismError::UnknownFormat))
+                            .unwrap();
                     }
-                },
-                InternalMessage::LoadNext(f) => {
-                    p_state.next_source = Some(f)
-                },
+                }
+                InternalMessage::LoadNext(f) => p_state.next_source = Some(f),
                 InternalMessage::Volume(v) => {
                     p_state.volume = v;
                     if let Some(a) = p_state.audio_output.as_mut() {
@@ -303,25 +328,31 @@ fn player_loop(
                             false => d.seek_absolute(p),
                         }
                     } else {
-                        p_state.internal_send.send(Err(PrismError::NothingLoaded)).unwrap();
+                        p_state
+                            .internal_send
+                            .send(Err(PrismError::NothingLoaded))
+                            .unwrap();
                         continue;
                     } {
                         Ok(_) => (),
                         Err(e) => {
-                            p_state.internal_send.send(Err(PrismError::DecoderError(e))).unwrap();
+                            p_state
+                                .internal_send
+                                .send(Err(PrismError::DecoderError(e)))
+                                .unwrap();
                             continue;
-                        },
+                        }
                     }
 
                     p_state.audio_output.as_mut().unwrap().seek_flush();
 
                     p_state.internal_send.send(Ok(())).unwrap();
-                },
+                }
                 InternalMessage::Destroy => {
                     warn!("destroying playback thread");
                     p_state.audio_output.unwrap().flush();
-                    break
-                },
+                    break;
+                }
             }
         }
 
@@ -337,14 +368,21 @@ fn player_loop(
             }
 
             // Only decode when buffer is below the healthy mark
-            while p_state.audio_output.as_mut().unwrap().buffer_level().0 < p_state.audio_output.as_mut().unwrap().buffer_healthy() {
+            while p_state.audio_output.as_mut().unwrap().buffer_level().0
+                < p_state.audio_output.as_mut().unwrap().buffer_healthy()
+            {
                 if timer.elapsed() > LOOP_DELAY_US {
                     // Never get stuck in here too long, but if this happens the
                     // decoding speed is too slow
                     break;
                 }
 
-                let len = match p_state.decoder.as_mut().unwrap().next_packet_to_buf(&mut output_buffer) {
+                let len = match p_state
+                    .decoder
+                    .as_mut()
+                    .unwrap()
+                    .next_packet_to_buf(&mut output_buffer)
+                {
                     Ok(l) => l,
                     Err(decode::DecoderError::EndOfStream) => {
                         // End of Stream reached, shut down everything and reset to
@@ -354,17 +392,23 @@ fn player_loop(
                         *p_state.state.write().unwrap() = State::Stopped;
                         *p_state.position.write().unwrap() = None;
                         continue 'external;
-                    },
+                    }
                     Err(de) => {
                         // Fatal decoder error
-                        let _ = p_state.internal_send.send(Err(PrismError::DecoderError(de)));
+                        let _ = p_state
+                            .internal_send
+                            .send(Err(PrismError::DecoderError(de)));
                         p_state.decoder = None;
                         *p_state.state.write().unwrap() = State::Stopped;
                         *p_state.position.write().unwrap() = None;
                         continue 'external;
-                    },
+                    }
                 };
-                p_state.audio_output.as_mut().unwrap().write(&output_buffer[0..len]);
+                p_state
+                    .audio_output
+                    .as_mut()
+                    .unwrap()
+                    .write(&output_buffer[0..len]);
             }
 
             *p_state.duration.write().unwrap() = p_state.decoder.as_ref().unwrap().duration();

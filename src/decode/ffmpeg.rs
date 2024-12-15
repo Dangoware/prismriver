@@ -1,9 +1,23 @@
-use std::{collections::HashMap, path::PathBuf, sync::{Arc, RwLock}, thread};
+use chrono::Duration;
 use crossbeam::channel::{Receiver, Sender};
-use ffmpeg_next::{codec::{self, Context}, decoder::Audio, filter, format::{context::Input, sample::{self, Type}}, frame, media, rescale, Rational, Rescale as _};
+use ffmpeg_next::{
+    codec::{self, Context},
+    decoder::Audio,
+    filter,
+    format::{
+        context::Input,
+        sample::{self, Type},
+    },
+    frame, media, rescale, Rational, Rescale as _,
+};
 use fluent_uri::Uri;
 use log::{info, warn};
-use chrono::Duration;
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    sync::{Arc, RwLock},
+    thread,
+};
 
 use crate::utils::uri_to_path;
 
@@ -24,8 +38,7 @@ pub struct FfmpegDecoder {
 
 impl FfmpegDecoder {
     pub fn new(input: &Uri<String>) -> Result<Self, DecoderError> {
-        ffmpeg_next::init()
-            .map_err(|e| DecoderError::InternalError(e.to_string()))?;
+        ffmpeg_next::init().map_err(|e| DecoderError::InternalError(e.to_string()))?;
         //ffmpeg_next::log::set_level(ffmpeg_next::log::Level::Verbose);
 
         let ictx = if input.scheme().as_str().starts_with("http") {
@@ -48,7 +61,9 @@ impl FfmpegDecoder {
         let stream = ictx
             .streams()
             .best(media::Type::Audio)
-            .ok_or(DecoderError::InternalError("Could not find audio stream".to_string()))?;
+            .ok_or(DecoderError::InternalError(
+                "Could not find audio stream".to_string(),
+            ))?;
 
         // Duration in ms
         let duration = if ictx.duration() == i64::MIN || ictx.duration() == i64::MAX {
@@ -56,7 +71,7 @@ impl FfmpegDecoder {
             None
         } else {
             Some(Duration::milliseconds(
-                ictx.duration().rescale(rescale::TIME_BASE, (1, 1000)) as i64
+                ictx.duration().rescale(rescale::TIME_BASE, (1, 1000)) as i64,
             ))
         };
         let position = Arc::new(RwLock::new(None));
@@ -127,9 +142,13 @@ impl Decoder for FfmpegDecoder {
         let data = match self.data_recv.recv() {
             Ok(l) => l,
             Err(_) if *self.ended.read().unwrap() => return Err(DecoderError::EndOfStream),
-            Err(_) => return {
-                Err(DecoderError::InternalError("Fatal stream error".to_string()))
-            },
+            Err(_) => {
+                return {
+                    Err(DecoderError::InternalError(
+                        "Fatal stream error".to_string(),
+                    ))
+                }
+            }
         };
         buf[..data.len()].copy_from_slice(&data);
 
@@ -235,17 +254,27 @@ fn decode_loop(
                 break 'main;
             }
 
-            while filter.get("out").unwrap().sink().frame(&mut filtered).is_ok() {
+            while filter
+                .get("out")
+                .unwrap()
+                .sink()
+                .frame(&mut filtered)
+                .is_ok()
+            {
                 if filtered.timestamp().is_some() {
                     let pos = Some(Duration::milliseconds(
-                        filtered.timestamp()
+                        filtered
+                            .timestamp()
                             .unwrap()
-                            .rescale(input_time_base, (1, 1000)) as i64
+                            .rescale(input_time_base, (1, 1000)) as i64,
                     ));
                     *position.write().unwrap() = pos;
                 }
 
-                let output: Vec<f32> = (0..filtered.planes()).flat_map(|p| filtered.plane::<f32>(p)).copied().collect();
+                let output: Vec<f32> = (0..filtered.planes())
+                    .flat_map(|p| filtered.plane::<f32>(p))
+                    .copied()
+                    .collect();
 
                 data_send.send(output.as_slice().into()).unwrap();
                 drop(output);

@@ -1,6 +1,10 @@
 use std::path::{Path, PathBuf};
 
-use fluent_uri::{component::Scheme, encoding::{encoder, EString}, Uri};
+use fluent_uri::{
+    component::Scheme,
+    encoding::{encoder, EString},
+    Uri,
+};
 
 use crate::decode::{self, Decoder};
 
@@ -10,7 +14,7 @@ pub fn pick_format(uri: &Uri<String>) -> Option<Box<dyn Decoder>> {
     #[cfg(feature = "ffmpeg")]
     if uri.scheme().as_str().starts_with("http") {
         if let Ok(d) = decode::ffmpeg::FfmpegDecoder::new(uri) {
-            return Some(Box::new(d))
+            return Some(Box::new(d));
         }
     }
 
@@ -18,14 +22,15 @@ pub fn pick_format(uri: &Uri<String>) -> Option<Box<dyn Decoder>> {
     #[cfg(feature = "symphonia")]
     if uri.scheme().as_str() == "file" {
         if let Ok(d) = decode::rusty::RustyDecoder::new(uri) {
-            return Some(Box::new(d))
+            return Some(Box::new(d));
         }
     }
 
     // If symphonia can't parse it, try ffmpeg
-    #[cfg(feature = "ffmpeg")] {
+    #[cfg(feature = "ffmpeg")]
+    {
         if let Ok(d) = decode::ffmpeg::FfmpegDecoder::new(uri) {
-            return Some(Box::new(d))
+            return Some(Box::new(d));
         }
     }
 
@@ -37,7 +42,7 @@ pub fn pick_format(uri: &Uri<String>) -> Option<Box<dyn Decoder>> {
     }
 }
 
-pub fn path_to_uri<P: AsRef<Path>>(path: &P) -> Result<Uri::<String>, Box<dyn std::error::Error>> {
+pub fn path_to_uri<P: AsRef<Path>>(path: &P) -> Result<Uri<String>, Box<dyn std::error::Error>> {
     let canonicalized = path.as_ref().canonicalize().unwrap();
     let path_string = canonicalized.to_string_lossy();
 

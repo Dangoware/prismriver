@@ -1,8 +1,11 @@
-use std::ops::Mul;
-use cpal::{traits::{DeviceTrait as _, StreamTrait}, Stream, StreamConfig};
+use cpal::{
+    traits::{DeviceTrait as _, StreamTrait},
+    Stream, StreamConfig,
+};
 use log::{error, info, warn};
 use rb::{RbConsumer as _, RbInspector, RbProducer as _, RB as _};
 use samplerate::{ConverterType, Samplerate};
+use std::ops::Mul;
 
 use crate::decode::StreamParams;
 
@@ -81,9 +84,7 @@ const OUTPUT_RATE_HZ: u32 = 44_100;
 const CHANNELS_OUT: u16 = 2;
 
 impl AudioOutputInner {
-    fn new(
-        device: &cpal::Device,
-    ) -> Self {
+    fn new(device: &cpal::Device) -> Self {
         // Ensure that the stream has a valid output sample rate.
         // Always prefer OUTPUT_RATE_HZ, but adapt as needed.
         let mut out_hz = OUTPUT_RATE_HZ;
@@ -94,7 +95,10 @@ impl AudioOutputInner {
         }
         out_hz = out_hz.clamp(min, max);
         if out_hz != OUTPUT_RATE_HZ {
-            warn!("output rate can't be set to {}, using {}", OUTPUT_RATE_HZ, out_hz)
+            warn!(
+                "output rate can't be set to {}, using {}",
+                OUTPUT_RATE_HZ, out_hz
+            )
         }
 
         let output_params = cpal::StreamConfig {
@@ -104,24 +108,27 @@ impl AudioOutputInner {
         };
 
         // Create a ring buffer with a capacity for up-to 200ms of audio.
-        let ring_len = ((200 * output_params.sample_rate.0 as usize) / 1000) * output_params.channels as usize;
+        let ring_len =
+            ((200 * output_params.sample_rate.0 as usize) / 1000) * output_params.channels as usize;
 
         let ring_buf = rb::SpscRb::new(ring_len);
         let (ring_buf_producer, ring_buf_consumer) = (ring_buf.producer(), ring_buf.consumer());
 
-        let output_stream = device.build_output_stream(
-            &output_params,
-            move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                // Write out as many samples as possible from the ring buffer to the audio
-                // output.
-                let written = ring_buf_consumer.read(data).unwrap_or(0);
+        let output_stream = device
+            .build_output_stream(
+                &output_params,
+                move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                    // Write out as many samples as possible from the ring buffer to the audio
+                    // output.
+                    let written = ring_buf_consumer.read(data).unwrap_or(0);
 
-                // Mute any remaining samples.
-                data[written..].iter_mut().for_each(|s| *s = 0f32);
-            },
-            move |err| error!("audio output error: {}", err),
-            None,
-        ).unwrap();
+                    // Mute any remaining samples.
+                    data[written..].iter_mut().for_each(|s| *s = 0f32);
+                },
+                move |err| error!("audio output error: {}", err),
+                None,
+            )
+            .unwrap();
 
         Self {
             ring_buf,
@@ -165,13 +172,19 @@ impl AudioOutput for AudioOutputInner {
         };
 
         // Set the sample amplitude (volume) for every sample
-        let amplified_samples: Vec<f32> = processed_samples.iter().map(|s| s.mul(self.volume.as_f32())).collect();
+        let amplified_samples: Vec<f32> = processed_samples
+            .iter()
+            .map(|s| s.mul(self.volume.as_f32()))
+            .collect();
 
         //info!("{} samples to a buffer with a capacity for {}", amplified_samples.len(), self.ring_buf.capacity());
 
         // Write all samples to the ring buffer.
         let mut offset = 0;
-        while let Some(written) = self.ring_buf_producer.write_blocking(&amplified_samples[offset..]) {
+        while let Some(written) = self
+            .ring_buf_producer
+            .write_blocking(&amplified_samples[offset..])
+        {
             offset += written;
         }
     }
@@ -214,10 +227,7 @@ impl AudioOutput for AudioOutputInner {
             let resample_ratio = params.rate as f64 / self.output_params.sample_rate.0 as f64;
             info!(
                 "resampling {} Hz to {} Hz ({:0.4}), buffer size of {} bytes",
-                params.rate,
-                self.output_params.sample_rate.0,
-                resample_ratio,
-                params.packet_size,
+                params.rate, self.output_params.sample_rate.0, resample_ratio, params.packet_size,
             );
 
             // Chose samplerate conversion based on how extreme the sample ratio is
@@ -230,12 +240,10 @@ impl AudioOutput for AudioOutputInner {
             };
             info!("chose {} for sample rate conversion", converter.name());
 
-            self.resampler = Some(Samplerate::new(
-                converter,
-                params.rate,
-                self.output_params.sample_rate.0,
-                2,
-            ).unwrap());
+            self.resampler = Some(
+                Samplerate::new(converter, params.rate, self.output_params.sample_rate.0, 2)
+                    .unwrap(),
+            );
         } else {
             self.resampler = None;
         };

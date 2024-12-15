@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use chrono::Duration;
+use std::collections::HashMap;
 use thiserror::Error;
 
 // Mods and stuff -----------
@@ -61,8 +61,8 @@ pub trait Decoder {
 }
 
 pub mod dummy {
-    use std::time::Instant;
     use std::collections::HashMap;
+    use std::time::Instant;
 
     use chrono::Duration;
 
@@ -75,7 +75,7 @@ pub mod dummy {
     impl DummyDecoder {
         pub fn new() -> Self {
             Self {
-                instant: Instant::now()
+                instant: Instant::now(),
             }
         }
     }
@@ -106,7 +106,7 @@ pub mod dummy {
             StreamParams {
                 rate: 44100,
                 channels: 2,
-                packet_size: 4096
+                packet_size: 4096,
             }
         }
 
