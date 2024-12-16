@@ -472,6 +472,7 @@ fn player_loop(
                     aud_out.flush();
                     *flag.write().unwrap() = None;
                     player_state.set_state(State::Stopped);
+                    continue;
                 }
             }
 
@@ -479,11 +480,16 @@ fn player_loop(
                 warn!("buffer reached 0%!");
             }
 
+            if aud_out.buffer_level() <= aud_out.buffer_low() && !player_state.stream_ending {
+                aud_out.set_buffering(true);
+                info!("buffering start");
+            } else if (aud_out.buffer_level() >= aud_out.buffer_high() && aud_out.buffering()) && !player_state.stream_ending {
+                aud_out.set_buffering(false);
+                info!("buffering end");
+            }
+
             // Only decode when buffer is below the healthy mark
-            while decoder.is_some()
-                //&& !player_state.stream_ending
-                && aud_out.buffer_level() < aud_out.buffer_healthy()
-            {
+            while decoder.is_some() && aud_out.buffer_level() < aud_out.buffer_high()  {
                 if timer.elapsed() > LOOP_DELAY {
                     // Never get stuck in here too long, but if this happens the
                     // decoding speed is too slow
