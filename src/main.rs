@@ -1,6 +1,5 @@
 use std::io::{self, Write};
 use std::thread::sleep;
-use std::time::Instant;
 
 use chrono::Duration;
 
@@ -11,45 +10,23 @@ use prismriver::State;
 use prismriver::Volume;
 
 fn main() {
-    colog::init();
     let mut player = Prismriver::new();
     player.set_volume(Volume::new(0.4));
 
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let mut paths = args.iter().filter(|a| !a.starts_with('-')).cloned().peekable();
-    let flags: Vec<String> = args.iter().filter(|a| a.starts_with('-')).cloned().collect();
+    let paths: Vec<String> = std::env::args().skip(1).collect();
 
-    for flag in flags {
-        if flag.starts_with("-v") {
-            let vol = flag.as_str()[2..].parse().unwrap();
-            player.set_volume(Volume::new(vol));
-        }
-    }
+    for path in paths {
+        println!("Playing... {}", path);
 
-    while let Some(path) = paths.next() {
-        println!("Loading... {}", path);
+        let path_uri = path_to_uri(&path).unwrap();
 
-        let uri = if path.starts_with("http") {
-            path.parse::<Uri<String>>().unwrap()
-        } else {
-            path_to_uri(&path).unwrap()
-        };
-
-        player.load_new(&uri).unwrap();
+        player.load_new(&path_uri).unwrap();
         player.set_state(State::Playing);
-        println!("Playing!");
 
         while player.state() == State::Playing || player.state() == State::Paused {
-            sleep(std::time::Duration::from_millis(50));
-            print_timer(player.position(), player.duration());
-            if paths.peek().is_some() && player.flag() == Some(Flag::AboutToFinish) {
-                break;
-            }
+            sleep(std::time::Duration::from_millis(100));
         }
-        println!();
     }
-
-    println!("It's so over")
 }
 
 fn print_timer(pos: Option<Duration>, len: Option<Duration>) {
@@ -62,7 +39,7 @@ fn print_timer(pos: Option<Duration>, len: Option<Duration>) {
             p.num_milliseconds() % 1000
         )
     } else {
-        "--:--".to_string()
+        "--:--:--.---".to_string()
     };
 
     let pos_string = if let Some(p) = pos {
@@ -74,7 +51,7 @@ fn print_timer(pos: Option<Duration>, len: Option<Duration>) {
             p.num_milliseconds() % 1000
         )
     } else {
-        "--:--".to_string()
+        "--:--:--.---".to_string()
     };
 
     print!("{} / {}\r", pos_string, len_string,);

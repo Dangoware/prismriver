@@ -1,37 +1,76 @@
+//! An audio playback library intended for music players.
+//!
+//! This crate is being developed alongside Dango Music Player as the audio
+//! playback backend. The overall goal of Prismriver is not to create an
+//! all-rust playback library; those already exist. Instead, it's supposed to
+//! function similarly to Gstreamer, where one frontend can be used to build
+//! multimedia applications easily. Because of that, being 100% Rust is not a
+//! goal of this project, except where that would improve cross compilation or
+//! ease development.
+//!
+//! Playback is easy! Just create a new [`Prismriver`] instance, and then give
+//! it a [`Uri<String>`] to play using [`Prismriver::load_new`]. A `URI` can be
+//! easily created from a path using [`utils::path_to_uri`]. Then, set the state
+//! to [`State::Playing`] and the file will play. Then just wait for the
+//! playback state to be [`State::Stopped`]. If you want to transition between
+//! tracks gaplessly, wait for the [`Flag::AboutToFinish`] flag to be set, and
+//! feed it a new uri again using [`Prismriver::load_new`].
+//!
+//! ## Basic Example
+//! This will play all paths passed to it in order.
+//! ```
+//! use prismriver::{
+//!     Prismriver, State, Volume,
+//!     utils::path_to_uri,
+//! };
+//! use std::thread::sleep;
+//!
+//! let mut player = Prismriver::new();
+//! player.set_volume(Volume::new(0.4));
+//!
+//! let paths: Vec<String> = std::env::args().skip(1).collect();
+//!
+//! for path in paths {
+//!     println!("Playing... {}", path);
+//!
+//!     let path_uri = path_to_uri(&path).unwrap();
+//!
+//!     player.load_new(&path_uri).unwrap();
+//!     player.set_state(State::Playing);
+//!
+//!     while player.state() == State::Playing || player.state() == State::Paused {
+//!         sleep(std::time::Duration::from_millis(100));
+//!     }
+//! }
+//! ```
+
 mod audio_output;
 mod decode;
 pub mod utils;
 
 use std::{
-    collections::HashMap, ops::Deref, sync::{Arc, RwLock}, thread, time::Instant
+    collections::HashMap, sync::{Arc, RwLock}, thread, time::Instant
 };
 
-pub use audio_output::{AudioOutput, Volume};
+pub use audio_output::Volume;
 use chrono::{Duration, TimeDelta};
-use cpal::{traits::{DeviceTrait, HostTrait as _}, Device};
+use cpal::{traits::HostTrait as _, Device};
 use crossbeam::channel::{self, Receiver, Sender};
 use fluent_uri::Uri;
 use log::{info, warn};
 
-#[derive(Debug, Clone, Copy)]
-pub enum Command {
-    Play,
-    Pause,
-    Stop,
-    Seek(Duration),
-}
-
-pub enum InternalMessage {
+enum InternalMessage {
     /// Set a volume level
     Volume(Volume),
 
     /// Seek to a specified duration
     Seek(Duration, bool),
 
-    /// Set up the thread with a new stream
-    LoadNew(Uri<String>),
-
-    LoadNext(Uri<String>),
+    /// Set up the thread with a new stream.
+    ///
+    /// The bool determines whether to immediately end the currently playing
+    /// stream and flush all buffers.
+    LoadNew(Uri<String>, bool),
 
     /// Give the thread a new output device
     NewOutputDevice(Device),
@@ -40,25 +79,39 @@ pub enum InternalMessage {
     Destroy,
 }
 
+/// The current playback state of a [`Prismriver`] instance.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum State {
+    /// The playback is stopped, and nothing is loaded.
     #[default]
     Stopped,
-    Playing,
+    /// The player has a loaded stream, but it is not being actively played.
     Paused,
-    /// This state will be set if there was a fatal decoder error
+    /// The player has a loaded stream that is actively being played.
+    Playing,
+    /// This state will be set if there was a fatal decoder error, otherwise it
+    /// should never be set.
     Errored,
+    /// Unused for right now, this should be set while the player is buffering
+    /// network data.
     Buffering(u8),
 }
 
+/// A flag indicating various things about a stream's state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Flag {
+    /// The stream is very close to finishing.
+    ///
+    /// To ensure gapless playback, swap in a new URI now.
     AboutToFinish,
+
+    /// The stream has ended and a new one can be set.
     EndOfStream,
 }
 
+/// An error that a [`Prismriver`] instance can throw.
 #[derive(thiserror::Error, Debug)]
-pub enum PrismError {
+pub enum Error {
     #[error("Internal decoder error {}", 0)]
     DecoderError(#[from] decode::DecoderError),
 
@@ -72,6 +125,10 @@ pub enum PrismError {
     InternalThreadPanic,
 }
 
+/// A player for audio.
+///
+/// Create a new one using the [`Prismriver::new()`] function, then you can load
+/// a stream and perform various actions on it.
 pub struct Prismriver {
     volume: Volume,
 
@@ -81,10 +138,9 @@ pub struct Prismriver {
     flag: Arc<RwLock<Option<Flag>>>,
 
     internal_send: channel::Sender<InternalMessage>,
-    internal_recvback: channel::Receiver<Result<(), PrismError>>,
+    internal_recvback: channel::Receiver<Result<(), Error>>,
 
     uri_current: Option<Uri<String>>,
-    uri_next: Option<Uri<String>>,
 
     metadata: Arc<RwLock<HashMap<String, String>>>,
 }
@@ -143,14 +199,14 @@ impl Prismriver {
             state,
             flag,
             uri_current: None,
-            uri_next: None,
             internal_send,
             internal_recvback,
             metadata,
         }
     }
 
-    fn send_recv(&mut self, message: InternalMessage) -> Result<(), PrismError> {
+    /// Internal function to communicate with the playback thread.
+    fn send_recv(&mut self, message: InternalMessage) -> Result<(), Error> {
         // If there was already an error queued up, stuff is errored and this
         // can't continue
         if let Ok(Err(e)) = self.internal_recvback.try_recv() {
@@ -160,14 +216,19 @@ impl Prismriver {
         self.internal_send.send(message).unwrap();
         match self.internal_recvback.recv() {
             Ok(o) => o,
-            Err(_) => Err(PrismError::InternalThreadPanic),
+            Err(_) => Err(Error::InternalThreadPanic),
         }
     }
 
     /// Load a new stream.
-    pub fn load_new(&mut self, uri: &Uri<String>) -> Result<(), PrismError> {
+    pub fn load_new(&mut self, uri: &Uri<String>) -> Result<(), Error> {
         self.uri_current = Some(uri.clone());
-        self.send_recv(InternalMessage::LoadNew(uri.clone()))
+        self.send_recv(InternalMessage::LoadNew(uri.clone(), false))
+    }
+
+    /// Get the currently loaded URI.
+    pub fn current_uri(&self) -> &Option<Uri<String>> {
+        &self.uri_current
     }
 
     /// Get the volume.
@@ -183,38 +244,59 @@ impl Prismriver {
             .unwrap();
     }
 
+    /// Get the current playback [`State`].
     pub fn state(&self) -> State {
         *self.state.read().unwrap()
     }
 
+    /// Set the current playback [`State`].
     pub fn set_state(&mut self, state: State) {
         *self.state.write().unwrap() = state
     }
 
+    /// Get the current [`Flag`] status.
     pub fn flag(&self) -> Option<Flag> {
         *self.flag.read().unwrap()
     }
 
-    /// Seek relative to the current position.
+    /// Seek to an absolute position in the stream.
     ///
     /// The position is capped at the duration of the song, and zero.
-    pub fn seek_to(&mut self, pos: chrono::Duration) -> Result<(), PrismError> {
+    ///
+    /// ## Errors:
+    /// This will error if the stream is an unseekable network stream.
+    pub fn seek_to(&mut self, pos: chrono::Duration) -> Result<(), Error> {
         self.send_recv(InternalMessage::Seek(pos, false))
     }
 
-    pub fn seek_by(&mut self, pos: chrono::Duration) -> Result<(), PrismError> {
+    /// Seek relative to the current position in the stream.
+    ///
+    /// ## Errors:
+    /// This will error if the stream is an unseekable network stream.
+    pub fn seek_by(&mut self, pos: chrono::Duration) -> Result<(), Error> {
         self.send_recv(InternalMessage::Seek(pos, true)).unwrap();
         todo!()
     }
 
+    /// Get the current playback position.
+    ///
+    /// This will return [`None`] if nothing is loaded and playing, and also if
+    /// the stream decoder does not report a position.
     pub fn position(&self) -> Option<Duration> {
         *self.position.read().unwrap()
     }
 
+    /// Get the stream's duration.
+    ///
+    /// This will return [`None`] if nothing is loaded and playing, and also if
+    /// the stream decoder does not report a duration.
     pub fn duration(&self) -> Option<Duration> {
         *self.duration.read().unwrap()
     }
 
+    /// Get any currently known metadata from the stream.
+    ///
+    /// This may change at any point.
     pub fn metadata(&self) -> HashMap<String, String> {
         self.metadata.read().unwrap().clone()
     }
@@ -227,11 +309,11 @@ impl Drop for Prismriver {
 }
 
 const LOOP_DELAY: std::time::Duration = std::time::Duration::from_micros(5_000);
-pub const BUFFER_MAX: u64 = 240_000 / size_of::<f32>() as u64; // 240 KB
+const BUFFER_MAX: u64 = 240_000 / size_of::<f32>() as u64; // 240 KB
 
 fn player_loop(
     internal_recv: Receiver<InternalMessage>,
-    internal_send: Sender<Result<(), PrismError>>,
+    internal_send: Sender<Result<(), Error>>,
     playback_state: Arc<RwLock<State>>,
     position: Arc<RwLock<Option<Duration>>>,
     duration: Arc<RwLock<Option<Duration>>>,
@@ -244,7 +326,6 @@ fn player_loop(
     let mut decoder = None;
     let mut volume = Volume::default();
 
-    let mut next_source;
     let mut stream_params;
 
     let mut player_state = PlayerState {
@@ -255,7 +336,7 @@ fn player_loop(
         stream_ending: false,
     };
 
-    let mut decoded_bytes = 0;
+    let mut _decoded_bytes = 0;
 
     // Set thread priority on Windows to avoid stutters
     // TODO: Do we have any other problems on other platforms?
@@ -286,32 +367,33 @@ fn player_loop(
                     a_out.set_volume(volume);
                     audio_output = Some(a_out);
                 }
-                InternalMessage::LoadNew(f) => {
-                    if audio_output.is_none() {
+                InternalMessage::LoadNew(uri, replace) => {
+                    let Some(audio_output) = audio_output.as_mut() else {
                         panic!("This shouldn't be possible!")
-                    }
+                    };
 
                     // Try to select a format decoder
-                    decoder = utils::pick_format(&f);
+                    decoder = utils::pick_format(&uri);
 
                     if let Some(d) = decoder.as_ref() {
                         stream_params = Some(d.params());
-                        audio_output
-                            .as_mut()
-                            .unwrap()
-                            .update_input_params(stream_params.unwrap());
-                        decoded_bytes = 0;
+                        audio_output.update_input_params(stream_params.unwrap());
+                        _decoded_bytes = 0;
                         player_state.load_new();
                         *flag.write().unwrap() = None;
+
+                        if replace {
+                            audio_output.flush();
+                        }
+
                         internal_send.try_send(Ok(())).unwrap();
                     } else {
                         warn!("could not determine decoder to use for format");
                         internal_send
-                            .try_send(Err(PrismError::UnknownFormat))
+                            .try_send(Err(Error::UnknownFormat))
                             .unwrap();
                     }
                 }
-                InternalMessage::LoadNext(f) => next_source = Some(f),
                 InternalMessage::Volume(v) => {
                     volume = v;
                     if let Some(a) = audio_output.as_mut() {
@@ -327,14 +409,14 @@ fn player_loop(
                         }
                     } else {
                         internal_send
-                            .send(Err(PrismError::NothingLoaded))
+                            .send(Err(Error::NothingLoaded))
                             .unwrap();
                         continue;
                     } {
                         Ok(_) => (),
                         Err(e) => {
                             internal_send
-                                .send(Err(PrismError::DecoderError(e)))
+                                .send(Err(Error::DecoderError(e)))
                                 .unwrap();
                             continue;
                         }
@@ -393,12 +475,16 @@ fn player_loop(
                     }
                     Err(de) => {
                         // Fatal decoder error
-                        let _ = internal_send.send(Err(PrismError::DecoderError(de)));
+                        let _ = internal_send.send(Err(Error::DecoderError(de)));
                         decoder = None;
                         player_state.set_state(State::Stopped);
                         continue 'external;
                     }
                 };
+
+                if aud_out.buffer_level() == 0 {
+                    warn!("buffer reached 0%!");
+                }
 
                 player_state.set_times(
                     decoder.as_ref().unwrap().duration(),
@@ -409,7 +495,7 @@ fn player_loop(
 
                 // Write the decoded data to the output
                 aud_out.write(&output_buffer[..len]);
-                decoded_bytes += len;
+                _decoded_bytes += len;
 
                 *player_state.metadata.write().unwrap() = decoder.as_ref().unwrap().metadata();
             }

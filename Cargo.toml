@@ -33,7 +33,7 @@ optional = true
 features = ["all-codecs", "opt-simd"]
 
 [features]
-default = ["all_backends"]
+default = ["symphonia"]
 symphonia = ["dep:symphonia"]
 ffmpeg = ["dep:ffmpeg-next"]
 all_backends = ["ffmpeg", "symphonia"]

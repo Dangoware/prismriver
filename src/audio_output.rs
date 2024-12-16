@@ -62,11 +62,13 @@ pub trait AudioOutput {
     fn set_volume(&mut self, vol: Volume);
 
     /// Get the volume (amplitude) of the output.
+    #[allow(dead_code)]
     fn volume(&self) -> Volume;
 
     fn params(&self) -> StreamConfig;
 
     /// Get the input stream parameters.
+    #[allow(dead_code)]
     fn input_params(&self) -> Option<StreamParams>;
 
     /// Update input stream parameters, used for internal calculations.
@@ -310,6 +312,7 @@ impl AudioOutput for AudioOutputInner {
     }
 }
 
+/// A struct representing volume (amplitude), clamped between `0.0` and `1.0`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Volume(f32);
 

@@ -8,6 +8,7 @@ use ffmpeg_next::{
         context::Input,
         sample::{self, Type},
     },
+    Dictionary,
     frame, media, rescale, Rational, Rescale as _,
 };
 use fluent_uri::Uri;
@@ -40,7 +41,7 @@ pub struct FfmpegDecoder {
 impl FfmpegDecoder {
     pub fn new(input: &Uri<String>) -> Result<Self, DecoderError> {
         ffmpeg_next::init().map_err(|e| DecoderError::InternalError(e.to_string()))?;
-        ffmpeg_next::log::set_level(ffmpeg_next::log::Level::Quiet);
+        //ffmpeg_next::log::set_level(ffmpeg_next::log::Level::Debug);
 
         let ictx = if input.scheme().as_str().starts_with("http") {
             info!("playing back from network source");
@@ -48,7 +49,8 @@ impl FfmpegDecoder {
                 .map_err(|e| DecoderError::InternalError(e.to_string()))?
         } else {
             let path = uri_to_path(input).unwrap();
-            ffmpeg_next::format::input(&path)
+            let options = Dictionary::new();
+            ffmpeg_next::format::input_with_dictionary(&path, options)
                 .map_err(|e| DecoderError::InternalError(e.to_string()))?
         };
 
