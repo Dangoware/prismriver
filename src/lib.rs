@@ -490,7 +490,7 @@ fn player_loop(
 
             // Only decode when buffer is below the healthy mark
             while decoder.is_some() && aud_out.buffer_level() < aud_out.buffer_high()  {
-                if timer.elapsed() > LOOP_DELAY {
+                if !aud_out.buffering() && (timer.elapsed() > LOOP_DELAY) {
                     // Never get stuck in here too long, but if this happens the
                     // decoding speed is too slow
                     warn!("decoding took more than {}ms, buffer level {:0.2}%", LOOP_DELAY.as_millis(), aud_out.buffer_percent());
