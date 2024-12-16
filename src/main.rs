@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::io::{self, Write};
 use std::thread::sleep;
 
@@ -6,7 +5,7 @@ use chrono::Duration;
 
 use fluent_uri::Uri;
 use prismriver::utils::path_to_uri;
-use prismriver::Prismriver;
+use prismriver::{Flag, Prismriver};
 use prismriver::State;
 use prismriver::Volume;
 
@@ -15,10 +14,9 @@ fn main() {
     let mut player = Prismriver::new();
     player.set_volume(Volume::new(0.4));
 
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let mut metadata = HashMap::new();
+    let mut args = std::env::args().skip(1).peekable();
 
-    for path in args {
+    while let Some(path) = args.next() {
         println!("Loading... {}", path);
 
         let uri = if path.starts_with("http") {
@@ -33,11 +31,10 @@ fn main() {
         println!("Playing!");
 
         while player.state() == State::Playing {
-            sleep(std::time::Duration::from_millis(100));
+            sleep(std::time::Duration::from_millis(50));
             print_timer(player.position(), player.duration());
-            if player.metadata() != metadata {
-                metadata = player.metadata();
-                println!("{}", metadata.get("title").cloned().unwrap_or_default());
+            if args.peek().is_some() && player.flag() == Some(Flag::AboutToFinish) {
+                break;
             }
         }
         println!();
@@ -47,18 +44,30 @@ fn main() {
 }
 
 fn print_timer(pos: Option<Duration>, len: Option<Duration>) {
-    let len_string = if let Some(l) = len {
-        format!("{:02}:{:02}", l.num_seconds() / 60, l.num_seconds() % 60)
+    let len_string = if let Some(p) = len {
+        format!(
+            "{:02}:{:02}:{:02}.{:03}",
+            p.num_seconds() / 3600,
+            (p.num_seconds() / 60) % 60,
+            p.num_seconds() % 60,
+            p.num_milliseconds() % 1000
+        )
     } else {
         "--:--".to_string()
     };
 
     let pos_string = if let Some(p) = pos {
-        format!("{:02}:{:02}", p.num_seconds() / 60, p.num_seconds() % 60)
+        format!(
+            "{:02}:{:02}:{:02}.{:03}",
+            p.num_seconds() / 3600,
+            (p.num_seconds() / 60) % 60,
+            p.num_seconds() % 60,
+            p.num_milliseconds() % 1000
+        )
     } else {
         "--:--".to_string()
     };
 
-    print!("{}/{}\r", pos_string, len_string,);
+    print!("{} / {}\r", pos_string, len_string,);
     io::stdout().flush().unwrap();
 }

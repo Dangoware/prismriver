@@ -10,7 +10,7 @@ use std::{
 };
 
 pub use audio_output::{AudioOutput, Volume};
-use chrono::Duration;
+use chrono::{Duration, TimeDelta};
 use cpal::{traits::HostTrait as _, Device};
 use crossbeam::channel::{self, Receiver, Sender};
 use fluent_uri::Uri;
@@ -54,6 +54,12 @@ pub enum State {
     Buffering(u8),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Flag {
+    AboutToFinish,
+    EndOfStream,
+}
+
 #[derive(thiserror::Error, Debug)]
 pub enum PrismError {
     #[error("Internal decoder error {}", 0)]
@@ -75,12 +81,13 @@ pub struct Prismriver {
     state: Arc<RwLock<State>>,
     position: Arc<RwLock<Option<Duration>>>,
     duration: Arc<RwLock<Option<Duration>>>,
+    flag: Arc<RwLock<Option<Flag>>>,
 
     internal_send: channel::Sender<InternalMessage>,
     internal_recvback: channel::Receiver<Result<(), PrismError>>,
 
-    _uri_current: Option<Uri<String>>,
-    _uri_next: Option<Uri<String>>,
+    uri_current: Option<Uri<String>>,
+    uri_next: Option<Uri<String>>,
 
     metadata: Arc<RwLock<HashMap<String, String>>>,
 }
@@ -105,6 +112,7 @@ impl Prismriver {
         let position = Arc::new(RwLock::new(None));
         let duration = Arc::new(RwLock::new(None));
         let metadata = Arc::new(RwLock::new(HashMap::new()));
+        let flag = Arc::new(RwLock::new(None));
         thread::Builder::new()
             .name("audio_player".to_string())
             .spawn({
@@ -112,6 +120,7 @@ impl Prismriver {
                 let position = Arc::clone(&position);
                 let duration = Arc::clone(&duration);
                 let metadata = Arc::clone(&metadata);
+                let flag = Arc::clone(&flag);
                 move || {
                     player_loop(
                         internal_recv,
@@ -120,6 +129,7 @@ impl Prismriver {
                         position,
                         duration,
                         metadata,
+                        flag,
                     )
                 }
             })
@@ -134,8 +144,9 @@ impl Prismriver {
             duration,
             volume: Volume::default(),
             state,
-            _uri_current: None,
-            _uri_next: None,
+            flag,
+            uri_current: None,
+            uri_next: None,
             internal_send,
             internal_recvback,
             metadata,
@@ -158,16 +169,10 @@ impl Prismriver {
 
     /// Load a new stream.
     ///
-    /// This immediately overrides the previous one, flushing the buffer.
+    /// If you want
     pub fn load_new(&mut self, uri: &Uri<String>) -> Result<(), PrismError> {
+        self.uri_current = Some(uri.clone());
         self.send_recv(InternalMessage::LoadNew(uri.clone()))
-    }
-
-    /// Set a new stream to be played after the current one ends.
-    ///
-    /// This allows for gapless transitions.
-    pub fn load_next(&mut self, _uri: &Uri<String>) -> Result<(), PrismError> {
-        todo!()
     }
 
     /// Get the volume
@@ -183,12 +188,16 @@ impl Prismriver {
             .unwrap();
     }
 
-    pub fn state(&mut self) -> State {
+    pub fn state(&self) -> State {
         *self.state.read().unwrap()
     }
 
     pub fn set_state(&mut self, state: State) {
         *self.state.write().unwrap() = state
+    }
+
+    pub fn flag(&self) -> Option<Flag> {
+        *self.flag.read().unwrap()
     }
 
     /// Seek relative to the current position.
@@ -203,15 +212,15 @@ impl Prismriver {
         todo!()
     }
 
-    pub fn position(&mut self) -> Option<Duration> {
+    pub fn position(&self) -> Option<Duration> {
         *self.position.read().unwrap()
     }
 
-    pub fn duration(&mut self) -> Option<Duration> {
+    pub fn duration(&self) -> Option<Duration> {
         *self.duration.read().unwrap()
     }
 
-    pub fn metadata(&mut self) -> HashMap<String, String> {
+    pub fn metadata(&self) -> HashMap<String, String> {
         self.metadata.read().unwrap().clone()
     }
 }
@@ -232,22 +241,26 @@ fn player_loop(
     position: Arc<RwLock<Option<Duration>>>,
     duration: Arc<RwLock<Option<Duration>>>,
     metadata: Arc<RwLock<HashMap<String, String>>>,
+    flag: Arc<RwLock<Option<Flag>>>,
 ) {
     let mut audio_output = None;
-    let mut audio_device = None;
+    let mut audio_device;
 
     let mut decoder = None;
     let mut volume = Volume::default();
 
-    let mut next_source = None;
-    let mut stream_params = None;
+    let mut next_source;
+    let mut stream_params;
 
     let mut player_state = PlayerState {
         playback_state,
         position,
         duration,
         metadata,
+        stream_ending: false,
     };
+
+    let mut decoded_bytes = 0;
 
     // Set thread priority on Windows to avoid stutters
     // TODO: Do we have any other problems on other platforms?
@@ -291,7 +304,10 @@ fn player_loop(
                         audio_output
                             .as_mut()
                             .unwrap()
-                            .update_params(stream_params.unwrap());
+                            .update_input_params(stream_params.unwrap());
+                        decoded_bytes = 0;
+                        player_state.load_new();
+                        *flag.write().unwrap() = None;
                         internal_send.try_send(Ok(())).unwrap();
                     } else {
                         warn!("could not determine decoder to use for format");
@@ -342,33 +358,41 @@ fn player_loop(
         }
 
         if *player_state.playback_state.read().unwrap() == State::Playing {
-            let Some(dec) = decoder.as_mut() else {
-                *player_state.playback_state.write().unwrap() = State::Stopped;
+            let Some(aud_out) = audio_output.as_mut() else {
+                player_state.set_state(State::Stopped);
                 continue;
             };
 
-            let Some(aud_out) = audio_output.as_mut() else {
-                *player_state.playback_state.write().unwrap() = State::Stopped;
+            // Here is the actual EndOfStream handler
+            if player_state.stream_ending && aud_out.buffer_level() == 0 {
+                aud_out.flush();
+                *flag.write().unwrap() = None;
+                player_state.set_state(State::Stopped);
                 continue;
-            };
+            }
+
+            //info!("buffer delay: {}ms, decoder {}", aud_out.buffer_delay().num_milliseconds(), decoder.is_some());
 
             // Only decode when buffer is below the healthy mark
-            while aud_out.buffer_level().0 < aud_out.buffer_healthy() {
+            while decoder.is_some()
+                && !player_state.stream_ending
+                && aud_out.buffer_level() < aud_out.buffer_healthy()
+            {
                 if timer.elapsed() > LOOP_DELAY {
                     // Never get stuck in here too long, but if this happens the
                     // decoding speed is too slow
-                    warn!("decoding taking more than {}ms", LOOP_DELAY.as_millis());
+                    warn!("decoding took more than {}ms, buffer level {}", LOOP_DELAY.as_millis(), aud_out.buffer_percent());
                     break;
                 }
 
-                let len = match dec.next_packet_to_buf(&mut output_buffer) {
+                let len = match decoder.as_mut().unwrap().next_packet_to_buf(&mut output_buffer) {
                     Ok(l) => l,
                     Err(decode::DecoderError::EndOfStream) => {
-                        // End of Stream reached, shut down everything and reset to
-                        // stopped state
+                        // End of Stream reached, set the EOF flag and wait for
+                        // buffer to finish
                         decoder = None;
-                        aud_out.flush();
-                        player_state.set_state(State::Stopped);
+                        *flag.write().unwrap() = Some(Flag::AboutToFinish);
+                        player_state.stream_ending = true;
                         continue 'external;
                     }
                     Err(de) => {
@@ -380,19 +404,20 @@ fn player_loop(
                     }
                 };
 
+                player_state.set_times(
+                    decoder.as_ref().unwrap().duration(),
+                    decoder.as_ref().unwrap().position().map(|d|
+                        (d - aud_out.buffer_delay()).clamp(TimeDelta::zero(), TimeDelta::MAX)
+                    )
+                );
+
                 // Write the decoded data to the output
                 aud_out.write(&output_buffer[..len]);
+                decoded_bytes += len;
+
+                *player_state.metadata.write().unwrap() = decoder.as_ref().unwrap().metadata();
             }
 
-            let delay = aud_out.buffer_delay();
-            //dbg!(delay);
-
-            player_state.set_times(
-                dec.duration(),
-                dec.position().map(|d| d - delay)
-            );
-
-            *player_state.metadata.write().unwrap() = dec.metadata();
             //info!("buffer {:0.0}%", (p_state.audio_output.as_mut().unwrap().buffer_level().0 as f32 / p_state.audio_output.as_mut().unwrap().buffer_level().1 as f32) * 100.0);
         }
 
@@ -401,11 +426,13 @@ fn player_loop(
     }
 }
 
+#[derive(Debug, Clone)]
 struct PlayerState {
     playback_state: Arc<RwLock<State>>,
     position: Arc<RwLock<Option<Duration>>>,
     duration: Arc<RwLock<Option<Duration>>>,
     metadata: Arc<RwLock<HashMap<String, String>>>,
+    stream_ending: bool,
 }
 
 impl PlayerState {
@@ -418,6 +445,7 @@ impl PlayerState {
                 *self.position.write().unwrap() = None;
                 *self.duration.write().unwrap() = None;
                 self.metadata.write().unwrap().clear();
+                self.stream_ending = false;
             },
             State::Playing => (),
             State::Paused => (),
@@ -432,5 +460,12 @@ impl PlayerState {
     ) {
         *self.duration.write().unwrap() = duration;
         *self.position.write().unwrap() = position;
+    }
+
+    fn load_new(&mut self) {
+        *self.duration.write().unwrap() = None;
+        *self.position.write().unwrap() = None;
+        self.stream_ending = false;
+        self.metadata.write().unwrap().clear();
     }
 }

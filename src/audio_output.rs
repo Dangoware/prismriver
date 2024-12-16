@@ -20,17 +20,9 @@ pub enum AudioOutputError {
 }
 
 pub fn open_output(device: &cpal::Device) -> Result<Box<dyn AudioOutput>, AudioOutputError> {
-    /* This is performed inside the trait struct now
-
-    let config = match device.default_output_config() {
-        Ok(config) => config,
-        Err(_err) => {
-            return Err(AudioOutputError::OpenStreamError);
-        }
-    };
-    */
-
     // Select proper playback routine based on sample format.
+    // In theory this could be different per platform, with other outputs like
+    // pipewire or something else
     Ok(Box::new(AudioOutputInner::new(device)))
 }
 
@@ -72,17 +64,34 @@ pub trait AudioOutput {
     /// Get the volume (amplitude) of the output.
     fn volume(&self) -> Volume;
 
-    /// Update stream parameters, used for internal calculations.
-    fn update_params(&mut self, params: StreamParams);
+    fn params(&self) -> StreamConfig;
+
+    /// Get the input stream parameters.
+    fn input_params(&self) -> Option<StreamParams>;
+
+    /// Update input stream parameters, used for internal calculations.
+    fn update_input_params(&mut self, params: StreamParams);
 
     /// Gets the current level of the buffer in bytes.
-    fn buffer_level(&self) -> (usize, usize);
+    fn buffer_level(&self) -> usize;
+
+    /// Gets the current level of the buffer in bytes.
+    fn buffer_capacity(&self) -> usize;
 
     /// Prints the size in bytes of the "healthy" level of the buffer.
     fn buffer_healthy(&self) -> usize;
 
     /// Calculates the delay until the buffer is empty and the last sample plays.
-    fn buffer_delay(&self) -> Duration;
+    fn buffer_delay(&self) -> Duration {
+        let samples_per_second = self.params().channels as i64 * self.params().sample_rate.0 as i64;
+        let delay_microseconds = (self.buffer_level() as i64 * 1_000_000) / samples_per_second;
+
+        Duration::microseconds(delay_microseconds)
+    }
+
+    fn buffer_percent(&self) -> f32 {
+        (self.buffer_level() as f32 / self.buffer_capacity() as f32) * 100.0
+    }
 }
 
 pub struct AudioOutputInner {
@@ -93,13 +102,15 @@ pub struct AudioOutputInner {
     channels: u16,
     state: bool,
 
+    input_params: Option<StreamParams>,
     output_stream: Stream,
     output_params: StreamConfig,
 }
 
 const OUTPUT_RATE_HZ: u32 = 44_100;
-//const OUTPUT_BUFFER_SIZE: u32 = OUTPUT_RATE_HZ / 100;
 const CHANNELS_OUT: u16 = 2;
+/// Ringbuffer buffer time in milliseconds
+const RINGBUFFER_DURATION: usize = 200;
 
 impl AudioOutputInner {
     fn new(device: &cpal::Device) -> Self {
@@ -109,7 +120,6 @@ impl AudioOutputInner {
         let mut min = 0;
         let mut max = 0;
         for config in device.supported_output_configs().unwrap() {
-            dbg!(config);
             (min, max) = (config.min_sample_rate().0, config.max_sample_rate().0);
         }
         out_hz = out_hz.clamp(min, max);
@@ -134,7 +144,7 @@ impl AudioOutputInner {
 
         // Create a ring buffer with a capacity for up-to 200ms of audio.
         let ring_len =
-            ((200 * output_params.sample_rate.0 as usize) / 1000) * output_params.channels as usize;
+            ((RINGBUFFER_DURATION * output_params.sample_rate.0 as usize) / 1000) * output_params.channels as usize;
 
         let ring_buf = rb::SpscRb::new(ring_len);
         let (ring_buf_producer, ring_buf_consumer) = (ring_buf.producer(), ring_buf.consumer());
@@ -163,6 +173,7 @@ impl AudioOutputInner {
             channels: out_ch,
             state: false,
 
+            input_params: None,
             output_stream,
             output_params,
         }
@@ -245,7 +256,15 @@ impl AudioOutput for AudioOutputInner {
         self.volume
     }
 
-    fn update_params(&mut self, params: StreamParams) {
+    fn params(&self) -> StreamConfig {
+        self.output_params.clone()
+    }
+
+    fn input_params(&self) -> Option<StreamParams> {
+        self.input_params
+    }
+
+    fn update_input_params(&mut self, params: StreamParams) {
         // If the sample rate is not equal to the output sample rate,
         // create a resampler to correct it
         if params.rate != self.output_params.sample_rate.0 {
@@ -273,22 +292,20 @@ impl AudioOutput for AudioOutputInner {
             self.resampler = None;
         };
 
-        self.channels = params.channels
+        self.input_params = Some(params);
+        self.channels = params.channels;
     }
 
-    fn buffer_level(&self) -> (usize, usize) {
-        (self.ring_buf.count(), self.ring_buf.capacity())
+    fn buffer_level(&self) -> usize {
+        self.ring_buf.count()
+    }
+
+    fn buffer_capacity(&self) -> usize {
+        self.ring_buf.capacity()
     }
 
     fn buffer_healthy(&self) -> usize {
-        self.ring_buf.capacity() - (self.ring_buf.capacity() / 8)
-    }
-
-    fn buffer_delay(&self) -> Duration {
-        let samples_per_second = self.output_params.channels as i64 * self.output_params.sample_rate.0 as i64;
-        let delay_microseconds = (self.ring_buf.count() as i64 * 1_000_000) / samples_per_second;
-
-        Duration::microseconds(delay_microseconds)
+        self.ring_buf.capacity() - (self.ring_buf.capacity() / 5)
     }
 }
 
