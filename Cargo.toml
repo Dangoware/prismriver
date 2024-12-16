@@ -11,7 +11,7 @@ crossbeam = { version = "0.8", features = ["crossbeam-channel"] }
 fluent-uri = "0.3"
 log = "0.4"
 rb = "0.4"
-samplerate = { path = "/home/g2/Documents/projects/dangoware/library_stuff/rust-samplerate/" }
+samplerate = { git="https://github.com/G2-Games/rust-samplerate.git" }
 thiserror = "2.0"
 thread-priority = "1.2"
 
