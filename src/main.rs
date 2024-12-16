@@ -1,5 +1,6 @@
 use std::io::{self, Write};
 use std::thread::sleep;
+use std::time::Instant;
 
 use chrono::Duration;
 
@@ -34,12 +35,11 @@ fn main() {
             path_to_uri(&path).unwrap()
         };
 
-        //let path = PathBuf::from(path);
         player.load_new(&uri).unwrap();
         player.set_state(State::Playing);
         println!("Playing!");
 
-        while player.state() == State::Playing {
+        while player.state() == State::Playing || player.state() == State::Paused {
             sleep(std::time::Duration::from_millis(50));
             print_timer(player.position(), player.duration());
             if paths.peek().is_some() && player.flag() == Some(Flag::AboutToFinish) {

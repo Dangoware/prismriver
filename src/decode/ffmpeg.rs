@@ -34,6 +34,7 @@ pub struct FfmpegDecoder {
     metadata: Arc<RwLock<HashMap<String, String>>>,
 
     ended: Arc<RwLock<bool>>,
+    killswitch: Sender<()>,
 }
 
 impl FfmpegDecoder {
@@ -102,6 +103,7 @@ impl FfmpegDecoder {
         let (seek_send, seek_recv) = crossbeam::channel::bounded::<i64>(1);
         let (data_send, data_recv) = crossbeam::channel::bounded(0);
         let ended = Arc::new(RwLock::new(false));
+        let (kill_send, kill_recv) = crossbeam::channel::bounded(1);
         thread::spawn({
             let position = Arc::clone(&position);
             let input_time_base = stream.time_base();
@@ -118,6 +120,7 @@ impl FfmpegDecoder {
                     seek_recv,
                     metadata,
                     ended,
+                    kill_recv,
                 );
             }
         });
@@ -133,7 +136,14 @@ impl FfmpegDecoder {
             metadata,
 
             ended,
+            killswitch: kill_send,
         })
+    }
+}
+
+impl Drop for FfmpegDecoder {
+    fn drop(&mut self) {
+        let _ = self.killswitch.try_send(());
     }
 }
 
@@ -226,11 +236,16 @@ fn decode_loop(
     seek_recv: Receiver<i64>,
     metadata: Arc<RwLock<HashMap<String, String>>>,
     ended: Arc<RwLock<bool>>,
+    killswitch: Receiver<()>,
 ) {
     let mut local_metadata = metadata.read().unwrap().clone();
     let mut temp_map = HashMap::new();
 
     'main: while let Some((stream, packet)) = ictx.packets().next() {
+        if killswitch.try_recv().is_ok() {
+            break 'main;
+        }
+
         temp_map.clear();
         for (k, v) in stream.metadata().iter() {
             temp_map.insert(k.to_string(), v.to_string());
@@ -276,7 +291,9 @@ fn decode_loop(
                     .copied()
                     .collect();
 
-                data_send.send(output.as_slice().into()).unwrap();
+                if data_send.send(output.as_slice().into()).is_err() {
+                    break 'main;
+                }
                 drop(output);
             }
         }

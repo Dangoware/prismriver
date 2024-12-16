@@ -226,7 +226,7 @@ impl Drop for Prismriver {
     }
 }
 
-const LOOP_DELAY: std::time::Duration = std::time::Duration::from_micros(5000);
+const LOOP_DELAY: std::time::Duration = std::time::Duration::from_micros(5_000);
 pub const BUFFER_MAX: u64 = 240_000 / size_of::<f32>() as u64; // 240 KB
 
 fn player_loop(
@@ -352,7 +352,8 @@ fn player_loop(
             }
         }
 
-        if *player_state.playback_state.read().unwrap() == State::Playing {
+        let state = *player_state.playback_state.read().unwrap();
+        if state == State::Playing {
             let Some(aud_out) = audio_output.as_mut() else {
                 player_state.set_state(State::Stopped);
                 continue;
@@ -414,6 +415,11 @@ fn player_loop(
             }
 
             //info!("buffer {:0.0}%", (p_state.audio_output.as_mut().unwrap().buffer_level().0 as f32 / p_state.audio_output.as_mut().unwrap().buffer_level().1 as f32) * 100.0);
+        } else if state == State::Stopped {
+            // This would happen when the user manually stops playback
+            decoder = None;
+            player_state.set_state(State::Stopped);
+            continue 'external;
         }
 
         // Prevent this from hogging a core
@@ -458,6 +464,7 @@ impl PlayerState {
     }
 
     fn load_new(&mut self) {
+        *self.playback_state.write().unwrap() = State::Paused;
         *self.duration.write().unwrap() = None;
         *self.position.write().unwrap() = None;
         self.stream_ending = false;
