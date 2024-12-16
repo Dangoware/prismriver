@@ -1,3 +1,5 @@
+//! Some useful functions to ease tedious tasks.
+
 use std::path::{Path, PathBuf};
 
 use fluent_uri::{

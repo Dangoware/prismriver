@@ -4,9 +4,9 @@ use cpal::{
     Stream, StreamConfig,
 };
 use log::{error, info, warn};
-use rb::{RbConsumer as _, RbInspector, RbProducer as _, RB as _};
+use rb::{RbConsumer as _, RbInspector, RbProducer, RB as _};
 use samplerate::{ConverterType, Samplerate};
-use std::ops::Mul;
+use std::{ops::Mul, sync::{atomic::{AtomicU64, Ordering}, Arc}};
 
 use crate::decode::StreamParams;
 
@@ -91,10 +91,19 @@ pub trait AudioOutput {
         Duration::microseconds(delay_microseconds)
     }
 
+    fn calculate_delay(&self, bytes: u64) -> Duration {
+        let samples_per_second = self.params().channels as i64 * self.params().sample_rate.0 as i64;
+        let delay_microseconds = (bytes as i64 * 1_000_000) / samples_per_second;
+
+        Duration::microseconds(delay_microseconds)
+    }
+
     /// Get the buffer's fullness as a percentage.
     fn buffer_percent(&self) -> f32 {
         (self.buffer_level() as f32 / self.buffer_capacity() as f32) * 100.0
     }
+
+    fn bytes_written(&self) -> u64;
 }
 
 pub struct AudioOutputInner {
@@ -108,12 +117,14 @@ pub struct AudioOutputInner {
     input_params: Option<StreamParams>,
     output_stream: Stream,
     output_params: StreamConfig,
+
+    bytes_written: Arc<AtomicU64>,
 }
 
 const OUTPUT_RATE_HZ: u32 = 44_100;
 const CHANNELS_OUT: u16 = 2;
 /// Ringbuffer buffer time in milliseconds
-const RINGBUFFER_DURATION: usize = 200;
+const RINGBUFFER_DURATION: usize = 2_000;
 
 impl AudioOutputInner {
     fn new(device: &cpal::Device) -> Self {
@@ -152,6 +163,8 @@ impl AudioOutputInner {
         let ring_buf = rb::SpscRb::new(ring_len);
         let (ring_buf_producer, ring_buf_consumer) = (ring_buf.producer(), ring_buf.consumer());
 
+        let bytes_written = Arc::new(AtomicU64::new(0));
+        let bytes_thread = Arc::clone(&bytes_written);
         let output_stream = device
             .build_output_stream(
                 &output_params,
@@ -159,6 +172,9 @@ impl AudioOutputInner {
                     // Write out as many samples as possible from the ring buffer to the audio
                     // output.
                     let written = ring_buf_consumer.read(data).unwrap_or(0);
+
+                    let orig = bytes_thread.load(Ordering::Relaxed);
+                    bytes_thread.store(orig + written as u64, Ordering::Relaxed);
 
                     // Mute any remaining samples.
                     data[written..].iter_mut().for_each(|s| *s = 0f32);
@@ -179,6 +195,8 @@ impl AudioOutputInner {
             input_params: None,
             output_stream,
             output_params,
+
+            bytes_written,
         }
     }
 }
@@ -224,6 +242,9 @@ impl AudioOutput for AudioOutputInner {
             .ring_buf_producer
             .write_blocking(&processed_samples[offset..])
         {
+            if written == 0 {
+                break;
+            }
             offset += written;
         }
     }
@@ -310,6 +331,10 @@ impl AudioOutput for AudioOutputInner {
     fn buffer_healthy(&self) -> usize {
         self.ring_buf.capacity() - (self.ring_buf.capacity() / 5)
     }
+
+    fn bytes_written(&self) -> u64 {
+        self.bytes_written.load(Ordering::Relaxed)
+    }
 }
 
 /// A struct representing volume (amplitude), clamped between `0.0` and `1.0`.
@@ -323,18 +348,21 @@ impl Default for Volume {
 }
 
 impl Volume {
+    /// Create a new volume with the given amplitude.
     pub fn new(vol: f32) -> Self {
         let vol = vol.clamp(0.0, 1.0);
 
         Volume(vol)
     }
 
+    /// Set a volume to a given amplitude.
     pub fn set(&mut self, vol: f32) {
         let vol = vol.clamp(0.0, 1.0);
 
         self.0 = vol
     }
 
+    /// Return the volume as an `f32`.
     pub fn as_f32(&self) -> f32 {
         self.0
     }

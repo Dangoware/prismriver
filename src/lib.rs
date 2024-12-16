@@ -44,6 +44,8 @@
 //! }
 //! ```
 
+#![warn(missing_docs)]
+
 mod audio_output;
 mod decode;
 pub mod utils;
@@ -112,15 +114,19 @@ pub enum Flag {
 /// An error that a [`Prismriver`] instance can throw.
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
+    /// Internal decoder error.
     #[error("Internal decoder error {}", 0)]
     DecoderError(#[from] decode::DecoderError),
 
+    /// The file given is a format incapable of being played.
     #[error("There is no decoder capable of playing the selected format")]
     UnknownFormat,
 
+    /// This operation is invalid with nothing loaded.
     #[error("Nothing is loaded, the operation is invalid")]
     NothingLoaded,
 
+    /// There was a serious issue and the internal thread panicked!
     #[error("The internal thread panicked!")]
     InternalThreadPanic,
 }
@@ -152,6 +158,8 @@ impl Default for Prismriver {
 }
 
 impl Prismriver {
+    /// Create a new Prismriver instance. This also automatically selects the
+    /// host's default output device.
     pub fn new() -> Prismriver {
         let (internal_send, internal_recv) = channel::bounded(1);
         let (internal_sendback, internal_recvback) = channel::bounded(1);
@@ -334,9 +342,12 @@ fn player_loop(
         duration,
         metadata,
         stream_ending: false,
+        decoded_bytes: 0,
+        written_bytes: 0,
     };
 
-    let mut _decoded_bytes = 0;
+    let mut pregap_written = 0;
+    let mut pregap_buffer = 0;
 
     // Set thread priority on Windows to avoid stutters
     // TODO: Do we have any other problems on other platforms?
@@ -378,7 +389,6 @@ fn player_loop(
                     if let Some(d) = decoder.as_ref() {
                         stream_params = Some(d.params());
                         audio_output.update_input_params(stream_params.unwrap());
-                        _decoded_bytes = 0;
                         player_state.load_new();
                         *flag.write().unwrap() = None;
 
@@ -441,19 +451,37 @@ fn player_loop(
                 continue;
             };
 
+            //info!("buffer delay: {}ms", aud_out.buffer_delay().num_milliseconds());
+
             // Here is the actual EndOfStream handler
-            if player_state.stream_ending && aud_out.buffer_level() == 0 {
-                aud_out.flush();
-                *flag.write().unwrap() = None;
-                player_state.set_state(State::Stopped);
-                continue;
+            if player_state.stream_ending {
+                let dur = player_state.duration.read().unwrap().clone();
+                player_state.set_times(
+                    dur,
+                    dur.map(|d| {
+                        //dbg!(d.num_milliseconds(), aud_out.buffer_delay().num_milliseconds());
+                        (d - aud_out.calculate_delay(pregap_buffer - (aud_out.bytes_written() - pregap_written))).clamp(TimeDelta::zero(), TimeDelta::MAX)
+                    })
+                );
+
+                if aud_out.bytes_written() - pregap_written >= pregap_buffer as u64 {
+                    player_state.stream_ending = false;
+                }
+
+                if aud_out.buffer_level() == 0 {
+                    aud_out.flush();
+                    *flag.write().unwrap() = None;
+                    player_state.set_state(State::Stopped);
+                }
             }
 
-            //info!("buffer delay: {}ms, decoder {}", aud_out.buffer_delay().num_milliseconds(), decoder.is_some());
+            if player_state.decoded_bytes != 0 && aud_out.buffer_level() == 0 {
+                warn!("buffer reached 0%!");
+            }
 
             // Only decode when buffer is below the healthy mark
             while decoder.is_some()
-                && !player_state.stream_ending
+                //&& !player_state.stream_ending
                 && aud_out.buffer_level() < aud_out.buffer_healthy()
             {
                 if timer.elapsed() > LOOP_DELAY {
@@ -471,6 +499,8 @@ fn player_loop(
                         decoder = None;
                         *flag.write().unwrap() = Some(Flag::AboutToFinish);
                         player_state.stream_ending = true;
+                        pregap_written = aud_out.bytes_written();
+                        pregap_buffer = aud_out.buffer_level() as u64;
                         continue 'external;
                     }
                     Err(de) => {
@@ -482,25 +512,23 @@ fn player_loop(
                     }
                 };
 
-                if aud_out.buffer_level() == 0 {
-                    warn!("buffer reached 0%!");
-                }
-
-                player_state.set_times(
-                    decoder.as_ref().unwrap().duration(),
-                    decoder.as_ref().unwrap().position().map(|d|
-                        (d - aud_out.buffer_delay()).clamp(TimeDelta::zero(), TimeDelta::MAX)
-                    )
-                );
-
                 // Write the decoded data to the output
                 aud_out.write(&output_buffer[..len]);
-                _decoded_bytes += len;
+                player_state.written_bytes += len as u64;
+
+                if !player_state.stream_ending {
+                    player_state.set_times(
+                        decoder.as_ref().unwrap().duration(),
+                        decoder.as_ref().unwrap().position().map(|d| {
+                            (d - aud_out.buffer_delay()).clamp(TimeDelta::zero(), TimeDelta::MAX)
+                        })
+                    );
+                }
 
                 *player_state.metadata.write().unwrap() = decoder.as_ref().unwrap().metadata();
             }
 
-            //info!("buffer {:0.0}%", (p_state.audio_output.as_mut().unwrap().buffer_level().0 as f32 / p_state.audio_output.as_mut().unwrap().buffer_level().1 as f32) * 100.0);
+            //info!("buffer {:0.0}%", aud_out.buffer_percent());
         } else if decoder.is_some() && state == State::Stopped {
             // This would happen when the user manually stops playback
             decoder = None;
@@ -508,17 +536,22 @@ fn player_loop(
             continue 'external;
         }
 
+        //dbg!(d.num_milliseconds(), aud_out.buffer_delay().num_milliseconds());
+
         // Prevent this from hogging a core
         thread::sleep(LOOP_DELAY.saturating_sub(timer.elapsed()));
     }
 }
 
+/// The internal state of the player.
 #[derive(Debug, Clone)]
 struct PlayerState {
     playback_state: Arc<RwLock<State>>,
     position: Arc<RwLock<Option<Duration>>>,
     duration: Arc<RwLock<Option<Duration>>>,
     metadata: Arc<RwLock<HashMap<String, String>>>,
+    decoded_bytes: u64,
+    written_bytes: u64,
     stream_ending: bool,
 }
 
@@ -551,9 +584,11 @@ impl PlayerState {
 
     fn load_new(&mut self) {
         *self.playback_state.write().unwrap() = State::Paused;
-        *self.duration.write().unwrap() = None;
-        *self.position.write().unwrap() = None;
-        self.stream_ending = false;
+        //*self.duration.write().unwrap() = None;
+        //*self.position.write().unwrap() = None;
+        //self.written_bytes = 0;
+        self.decoded_bytes = 0;
+        //self.stream_ending = false;
         self.metadata.write().unwrap().clear();
     }
 }
