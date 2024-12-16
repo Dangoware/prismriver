@@ -501,7 +501,7 @@ fn player_loop(
             }
 
             //info!("buffer {:0.0}%", (p_state.audio_output.as_mut().unwrap().buffer_level().0 as f32 / p_state.audio_output.as_mut().unwrap().buffer_level().1 as f32) * 100.0);
-        } else if state == State::Stopped {
+        } else if decoder.is_some() && state == State::Stopped {
             // This would happen when the user manually stops playback
             decoder = None;
             player_state.set_state(State::Stopped);
