@@ -39,7 +39,7 @@ pub struct FfmpegDecoder {
 impl FfmpegDecoder {
     pub fn new(input: &Uri<String>) -> Result<Self, DecoderError> {
         ffmpeg_next::init().map_err(|e| DecoderError::InternalError(e.to_string()))?;
-        //ffmpeg_next::log::set_level(ffmpeg_next::log::Level::Verbose);
+        ffmpeg_next::log::set_level(ffmpeg_next::log::Level::Quiet);
 
         let ictx = if input.scheme().as_str().starts_with("http") {
             info!("playing back from network source");

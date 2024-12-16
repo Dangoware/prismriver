@@ -3,15 +3,12 @@ mod decode;
 pub mod utils;
 
 use std::{
-    collections::HashMap,
-    sync::{Arc, RwLock},
-    thread,
-    time::Instant,
+    collections::HashMap, ops::Deref, sync::{Arc, RwLock}, thread, time::Instant
 };
 
 pub use audio_output::{AudioOutput, Volume};
 use chrono::{Duration, TimeDelta};
-use cpal::{traits::HostTrait as _, Device};
+use cpal::{traits::{DeviceTrait, HostTrait as _}, Device};
 use crossbeam::channel::{self, Receiver, Sender};
 use fluent_uri::Uri;
 use log::{info, warn};
@@ -100,11 +97,6 @@ impl Default for Prismriver {
 
 impl Prismriver {
     pub fn new() -> Prismriver {
-        let host = cpal::default_host();
-        let device = host
-            .default_output_device()
-            .expect("no output device available");
-
         let (internal_send, internal_recv) = channel::bounded(1);
         let (internal_sendback, internal_recvback) = channel::bounded(1);
 
@@ -134,6 +126,11 @@ impl Prismriver {
                 }
             })
             .unwrap();
+
+        let host = cpal::default_host();
+        let device = host
+            .default_output_device()
+            .expect("no output device available");
 
         internal_send
             .send(InternalMessage::NewOutputDevice(device))
@@ -168,19 +165,17 @@ impl Prismriver {
     }
 
     /// Load a new stream.
-    ///
-    /// If you want
     pub fn load_new(&mut self, uri: &Uri<String>) -> Result<(), PrismError> {
         self.uri_current = Some(uri.clone());
         self.send_recv(InternalMessage::LoadNew(uri.clone()))
     }
 
-    /// Get the volume
+    /// Get the volume.
     pub fn volume(&self) -> Volume {
         self.volume
     }
 
-    /// Set the volume
+    /// Set the volume.
     pub fn set_volume(&mut self, vol: Volume) {
         self.volume = vol;
         self.internal_send
@@ -381,7 +376,7 @@ fn player_loop(
                 if timer.elapsed() > LOOP_DELAY {
                     // Never get stuck in here too long, but if this happens the
                     // decoding speed is too slow
-                    warn!("decoding took more than {}ms, buffer level {}", LOOP_DELAY.as_millis(), aud_out.buffer_percent());
+                    warn!("decoding took more than {}ms, buffer level {:0.2}%", LOOP_DELAY.as_millis(), aud_out.buffer_percent());
                     break;
                 }
 
@@ -422,7 +417,7 @@ fn player_loop(
         }
 
         // Prevent this from hogging a core
-        thread::sleep(LOOP_DELAY);
+        thread::sleep(LOOP_DELAY.saturating_sub(timer.elapsed()));
     }
 }
 

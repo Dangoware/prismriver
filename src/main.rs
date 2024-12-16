@@ -14,9 +14,18 @@ fn main() {
     let mut player = Prismriver::new();
     player.set_volume(Volume::new(0.4));
 
-    let mut args = std::env::args().skip(1).peekable();
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut paths = args.iter().filter(|a| !a.starts_with('-')).cloned().peekable();
+    let flags: Vec<String> = args.iter().filter(|a| a.starts_with('-')).cloned().collect();
 
-    while let Some(path) = args.next() {
+    for flag in flags {
+        if flag.starts_with("-v") {
+            let vol = flag.as_str()[2..].parse().unwrap();
+            player.set_volume(Volume::new(vol));
+        }
+    }
+
+    while let Some(path) = paths.next() {
         println!("Loading... {}", path);
 
         let uri = if path.starts_with("http") {
@@ -33,7 +42,7 @@ fn main() {
         while player.state() == State::Playing {
             sleep(std::time::Duration::from_millis(50));
             print_timer(player.position(), player.duration());
-            if args.peek().is_some() && player.flag() == Some(Flag::AboutToFinish) {
+            if paths.peek().is_some() && player.flag() == Some(Flag::AboutToFinish) {
                 break;
             }
         }

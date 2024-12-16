@@ -89,6 +89,7 @@ pub trait AudioOutput {
         Duration::microseconds(delay_microseconds)
     }
 
+    /// Get the buffer's fullness as a percentage.
     fn buffer_percent(&self) -> f32 {
         (self.buffer_level() as f32 / self.buffer_capacity() as f32) * 100.0
     }
@@ -198,7 +199,7 @@ impl AudioOutput for AudioOutputInner {
         let decoded = interleave(decoded, self.channels as usize, self.output_params.channels as usize);
 
         // Resample if resampler exists
-        let processed_samples = if let Some(resampler) = &mut self.resampler {
+        let mut processed_samples = if let Some(resampler) = &mut self.resampler {
             match resampler.process(&decoded) {
                 Ok(resampled) => resampled,
                 Err(_) => return,
@@ -208,18 +209,18 @@ impl AudioOutput for AudioOutputInner {
         };
 
         // Set the sample amplitude (volume) for every sample
-        let amplified_samples: Vec<f32> = processed_samples
-            .iter()
-            .map(|s| s.mul(self.volume.as_f32()))
-            .collect();
-
-        //info!("{} samples to a buffer with a capacity for {}", amplified_samples.len(), self.ring_buf.capacity());
+        // This is obviously not necessary if the volume is not changed
+        if self.volume != 1.0 {
+            processed_samples
+                .iter_mut()
+                .for_each(|s| *s = s.mul(self.volume.as_f32()));
+        }
 
         // Write all samples to the ring buffer.
         let mut offset = 0;
         while let Some(written) = self
             .ring_buf_producer
-            .write_blocking(&amplified_samples[offset..])
+            .write_blocking(&processed_samples[offset..])
         {
             offset += written;
         }
@@ -341,5 +342,11 @@ impl std::ops::Mul<f32> for Volume {
 
     fn mul(self, rhs: f32) -> Self::Output {
         self.0 * rhs
+    }
+}
+
+impl PartialEq<f32> for Volume {
+    fn eq(&self, other: &f32) -> bool {
+        self.0 == *other
     }
 }
