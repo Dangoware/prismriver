@@ -43,7 +43,7 @@ pub fn pick_format(uri: &Uri<String>) -> Option<Box<dyn Decoder>> {
 }
 
 pub fn path_to_uri<P: AsRef<Path>>(path: &P) -> Result<Uri<String>, Box<dyn std::error::Error>> {
-    let canonicalized = path.as_ref().canonicalize().unwrap();
+    let canonicalized = path.as_ref().canonicalize()?;
     let path_string = canonicalized.to_string_lossy();
 
     let mut percent_path: EString<encoder::Path> = EString::new();

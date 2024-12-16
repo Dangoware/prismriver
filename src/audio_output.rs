@@ -1,3 +1,4 @@
+use chrono::Duration;
 use cpal::{
     traits::{DeviceTrait as _, StreamTrait},
     Stream, StreamConfig,
@@ -33,13 +34,22 @@ pub fn open_output(device: &cpal::Device) -> Result<Box<dyn AudioOutput>, AudioO
     Ok(Box::new(AudioOutputInner::new(device)))
 }
 
-pub fn interleave(planar: &[f32], channels: u16) -> Vec<f32> {
-    let mut interleaved = vec![0.; (planar.len() / channels as usize) * 2];
-    for (i, frame) in interleaved.chunks_exact_mut(2).enumerate() {
+pub fn interleave(planar: &[f32], channels: usize, output_channels: usize) -> Vec<f32> {
+    let channel_len = planar.len() / channels;
+    let mut interleaved = vec![0.; channel_len * output_channels];
+    for (i, frame) in interleaved.chunks_exact_mut(output_channels).enumerate() {
         for (ch, s) in frame.iter_mut().enumerate() {
-            *s = match planar.get((ch * planar.len() / channels as usize) + i) {
-                Some(s) => *s,
-                None => planar[i],
+            match ch {
+                c if c < 2 && channels == 1 => {
+                    *s = match planar.get((ch * channel_len) + i) {
+                        Some(v) => *v,
+                        None => planar[i]
+                    }
+                },
+                c if c < output_channels && c < channels => {
+                    *s = planar[(ch * channel_len) + i];
+                },
+                _ => *s = 0.0
             }
         }
     }
@@ -47,24 +57,32 @@ pub fn interleave(planar: &[f32], channels: u16) -> Vec<f32> {
 }
 
 pub trait AudioOutput {
-    /// Write some samples into the buffer to be played
+    /// Write some samples into the buffer to be played.
     fn write(&mut self, decoded: &[f32]);
 
-    /// Flush the remaining samples from the resampler
+    /// Flush the remaining samples from the resampler.
     fn flush(&mut self);
 
+    /// Call on a seek to prevent audio weirdness.
     fn seek_flush(&mut self);
 
-    /// Set the volume (amplitude) of the output
+    /// Set the volume (amplitude) of the output.
     fn set_volume(&mut self, vol: Volume);
 
-    /// Get the volume (amplitude) of the output
+    /// Get the volume (amplitude) of the output.
     fn volume(&self) -> Volume;
 
+    /// Update stream parameters, used for internal calculations.
     fn update_params(&mut self, params: StreamParams);
 
+    /// Gets the current level of the buffer in bytes.
     fn buffer_level(&self) -> (usize, usize);
+
+    /// Prints the size in bytes of the "healthy" level of the buffer.
     fn buffer_healthy(&self) -> usize;
+
+    /// Calculates the delay until the buffer is empty and the last sample plays.
+    fn buffer_delay(&self) -> Duration;
 }
 
 pub struct AudioOutputInner {
@@ -91,18 +109,25 @@ impl AudioOutputInner {
         let mut min = 0;
         let mut max = 0;
         for config in device.supported_output_configs().unwrap() {
+            dbg!(config);
             (min, max) = (config.min_sample_rate().0, config.max_sample_rate().0);
         }
         out_hz = out_hz.clamp(min, max);
         if out_hz != OUTPUT_RATE_HZ {
-            warn!(
-                "output rate can't be set to {}, using {}",
-                OUTPUT_RATE_HZ, out_hz
-            )
+            warn!("output rate can't be set to {OUTPUT_RATE_HZ}, using {out_hz}")
+        }
+
+        // Ensure the stream has a valid output channel count
+        let mut out_ch = CHANNELS_OUT;
+        if let Ok(c) = device.default_output_config() {
+            out_ch = c.channels();
+        }
+        if out_ch != CHANNELS_OUT {
+            warn!("output channel count can't be set to {CHANNELS_OUT}, using {out_ch}")
         }
 
         let output_params = cpal::StreamConfig {
-            channels: CHANNELS_OUT,
+            channels: out_ch,
             sample_rate: cpal::SampleRate(out_hz),
             buffer_size: cpal::BufferSize::Default,
         };
@@ -135,7 +160,7 @@ impl AudioOutputInner {
             ring_buf_producer,
             resampler: None,
             volume: Volume::default(),
-            channels: CHANNELS_OUT,
+            channels: out_ch,
             state: false,
 
             output_stream,
@@ -159,7 +184,7 @@ impl AudioOutput for AudioOutputInner {
         }
 
         // Interleave samples
-        let decoded = interleave(decoded, self.channels);
+        let decoded = interleave(decoded, self.channels as usize, self.output_params.channels as usize);
 
         // Resample if resampler exists
         let processed_samples = if let Some(resampler) = &mut self.resampler {
@@ -257,6 +282,13 @@ impl AudioOutput for AudioOutputInner {
 
     fn buffer_healthy(&self) -> usize {
         self.ring_buf.capacity() - (self.ring_buf.capacity() / 8)
+    }
+
+    fn buffer_delay(&self) -> Duration {
+        let samples_per_second = self.output_params.channels as i64 * self.output_params.sample_rate.0 as i64;
+        let delay_microseconds = (self.ring_buf.count() as i64 * 1_000_000) / samples_per_second;
+
+        Duration::microseconds(delay_microseconds)
     }
 }
 

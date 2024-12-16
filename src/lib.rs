@@ -13,7 +13,6 @@ pub use audio_output::{AudioOutput, Volume};
 use chrono::Duration;
 use cpal::{traits::HostTrait as _, Device};
 use crossbeam::channel::{self, Receiver, Sender};
-use decode::Decoder;
 use fluent_uri::Uri;
 use log::{info, warn};
 
@@ -50,6 +49,8 @@ pub enum State {
     Stopped,
     Playing,
     Paused,
+    /// This state will be set if there was a fatal decoder error
+    Errored,
     Buffering(u8),
 }
 
@@ -142,6 +143,12 @@ impl Prismriver {
     }
 
     fn send_recv(&mut self, message: InternalMessage) -> Result<(), PrismError> {
+        // If there was already an error queued up, stuff is errored and this
+        // can't continue
+        if let Ok(Err(e)) = self.internal_recvback.try_recv() {
+            return Err(e)
+        }
+
         self.internal_send.send(message).unwrap();
         match self.internal_recvback.recv() {
             Ok(o) => o,
@@ -215,54 +222,36 @@ impl Drop for Prismriver {
     }
 }
 
-const LOOP_DELAY_US: std::time::Duration = std::time::Duration::from_micros(5000);
+const LOOP_DELAY: std::time::Duration = std::time::Duration::from_micros(5000);
 pub const BUFFER_MAX: u64 = 240_000 / size_of::<f32>() as u64; // 240 KB
-
-struct PlayerState {
-    audio_output: Option<Box<dyn AudioOutput>>,
-    audio_device: Option<Device>,
-
-    decoder: Option<Box<dyn Decoder>>,
-    volume: Volume,
-
-    next_source: Option<Uri<String>>,
-    stream_params: Option<decode::StreamParams>,
-
-    internal_recv: Receiver<InternalMessage>,
-    internal_send: Sender<Result<(), PrismError>>,
-    state: Arc<RwLock<State>>,
-    position: Arc<RwLock<Option<Duration>>>,
-    duration: Arc<RwLock<Option<Duration>>>,
-
-    metadata: Arc<RwLock<HashMap<String, String>>>,
-}
 
 fn player_loop(
     internal_recv: Receiver<InternalMessage>,
     internal_send: Sender<Result<(), PrismError>>,
-    state: Arc<RwLock<State>>,
+    playback_state: Arc<RwLock<State>>,
     position: Arc<RwLock<Option<Duration>>>,
     duration: Arc<RwLock<Option<Duration>>>,
     metadata: Arc<RwLock<HashMap<String, String>>>,
 ) {
-    let mut p_state = PlayerState {
-        internal_recv,
-        internal_send,
-        state,
+    let mut audio_output = None;
+    let mut audio_device = None;
+
+    let mut decoder = None;
+    let mut volume = Volume::default();
+
+    let mut next_source = None;
+    let mut stream_params = None;
+
+    let mut player_state = PlayerState {
+        playback_state,
         position,
         duration,
-
-        audio_output: None,
-        audio_device: None,
-        decoder: None,
-        volume: Volume::default(),
-        next_source: None,
-        stream_params: None,
-
         metadata,
     };
 
-    // Set thread priority to avoid stutters
+    // Set thread priority on Windows to avoid stutters
+    // TODO: Do we have any other problems on other platforms?
+    // Linux seems to be fine
     #[cfg(target_os = "windows")]
     {
         use thread_priority::*;
@@ -280,144 +269,168 @@ fn player_loop(
     'external: loop {
         let timer = Instant::now();
         // Check if there are any internal commands to process
-        if let Ok(r) = p_state.internal_recv.try_recv() {
+        if let Ok(r) = internal_recv.try_recv() {
             match r {
                 InternalMessage::NewOutputDevice(device) => {
-                    p_state.audio_device = Some(device);
+                    audio_device = Some(device);
                     let mut a_out =
-                        audio_output::open_output(&p_state.audio_device.unwrap()).unwrap();
-                    a_out.set_volume(p_state.volume);
-                    p_state.audio_output = Some(a_out);
+                        audio_output::open_output(&audio_device.unwrap()).unwrap();
+                    a_out.set_volume(volume);
+                    audio_output = Some(a_out);
                 }
                 InternalMessage::LoadNew(f) => {
-                    if p_state.audio_output.is_none() {
+                    if audio_output.is_none() {
                         panic!("This shouldn't be possible!")
                     }
 
                     // Try to select a format decoder
-                    p_state.decoder = utils::pick_format(&f);
+                    decoder = utils::pick_format(&f);
 
-                    if let Some(d) = p_state.decoder.as_ref() {
-                        p_state.stream_params = Some(d.params());
-                        p_state
-                            .audio_output
+                    if let Some(d) = decoder.as_ref() {
+                        stream_params = Some(d.params());
+                        audio_output
                             .as_mut()
                             .unwrap()
-                            .update_params(p_state.stream_params.unwrap());
-                        p_state.internal_send.try_send(Ok(())).unwrap();
+                            .update_params(stream_params.unwrap());
+                        internal_send.try_send(Ok(())).unwrap();
                     } else {
                         warn!("could not determine decoder to use for format");
-                        p_state
-                            .internal_send
+                        internal_send
                             .try_send(Err(PrismError::UnknownFormat))
                             .unwrap();
                     }
                 }
-                InternalMessage::LoadNext(f) => p_state.next_source = Some(f),
+                InternalMessage::LoadNext(f) => next_source = Some(f),
                 InternalMessage::Volume(v) => {
-                    p_state.volume = v;
-                    if let Some(a) = p_state.audio_output.as_mut() {
+                    volume = v;
+                    if let Some(a) = audio_output.as_mut() {
                         a.set_volume(v)
                     }
                     info!("volume is now {:0.0}%", v.as_f32() * 100.0);
                 }
                 InternalMessage::Seek(p, relative) => {
-                    match if let Some(d) = p_state.decoder.as_mut() {
+                    match if let Some(d) = decoder.as_mut() {
                         match relative {
                             true => d.seek_relative(p),
                             false => d.seek_absolute(p),
                         }
                     } else {
-                        p_state
-                            .internal_send
+                        internal_send
                             .send(Err(PrismError::NothingLoaded))
                             .unwrap();
                         continue;
                     } {
                         Ok(_) => (),
                         Err(e) => {
-                            p_state
-                                .internal_send
+                            internal_send
                                 .send(Err(PrismError::DecoderError(e)))
                                 .unwrap();
                             continue;
                         }
                     }
 
-                    p_state.audio_output.as_mut().unwrap().seek_flush();
+                    audio_output.as_mut().unwrap().seek_flush();
 
-                    p_state.internal_send.send(Ok(())).unwrap();
+                    internal_send.send(Ok(())).unwrap();
                 }
                 InternalMessage::Destroy => {
                     warn!("destroying playback thread");
-                    p_state.audio_output.unwrap().flush();
+                    audio_output.unwrap().flush();
                     break;
                 }
             }
         }
 
-        if *p_state.state.read().unwrap() == State::Playing {
-            if p_state.decoder.is_none() {
-                *p_state.state.write().unwrap() = State::Stopped;
+        if *player_state.playback_state.read().unwrap() == State::Playing {
+            let Some(dec) = decoder.as_mut() else {
+                *player_state.playback_state.write().unwrap() = State::Stopped;
                 continue;
-            }
+            };
 
-            if p_state.audio_output.is_none() {
-                *p_state.state.write().unwrap() = State::Stopped;
+            let Some(aud_out) = audio_output.as_mut() else {
+                *player_state.playback_state.write().unwrap() = State::Stopped;
                 continue;
-            }
+            };
 
             // Only decode when buffer is below the healthy mark
-            while p_state.audio_output.as_mut().unwrap().buffer_level().0
-                < p_state.audio_output.as_mut().unwrap().buffer_healthy()
-            {
-                if timer.elapsed() > LOOP_DELAY_US {
+            while aud_out.buffer_level().0 < aud_out.buffer_healthy() {
+                if timer.elapsed() > LOOP_DELAY {
                     // Never get stuck in here too long, but if this happens the
                     // decoding speed is too slow
+                    warn!("decoding taking more than {}ms", LOOP_DELAY.as_millis());
                     break;
                 }
 
-                let len = match p_state
-                    .decoder
-                    .as_mut()
-                    .unwrap()
-                    .next_packet_to_buf(&mut output_buffer)
-                {
+                let len = match dec.next_packet_to_buf(&mut output_buffer) {
                     Ok(l) => l,
                     Err(decode::DecoderError::EndOfStream) => {
                         // End of Stream reached, shut down everything and reset to
                         // stopped state
-                        p_state.decoder = None;
-                        p_state.audio_output.as_mut().unwrap().flush();
-                        *p_state.state.write().unwrap() = State::Stopped;
-                        *p_state.position.write().unwrap() = None;
+                        decoder = None;
+                        aud_out.flush();
+                        player_state.set_state(State::Stopped);
                         continue 'external;
                     }
                     Err(de) => {
                         // Fatal decoder error
-                        let _ = p_state
-                            .internal_send
-                            .send(Err(PrismError::DecoderError(de)));
-                        p_state.decoder = None;
-                        *p_state.state.write().unwrap() = State::Stopped;
-                        *p_state.position.write().unwrap() = None;
+                        let _ = internal_send.send(Err(PrismError::DecoderError(de)));
+                        decoder = None;
+                        player_state.set_state(State::Stopped);
                         continue 'external;
                     }
                 };
-                p_state
-                    .audio_output
-                    .as_mut()
-                    .unwrap()
-                    .write(&output_buffer[0..len]);
+
+                // Write the decoded data to the output
+                aud_out.write(&output_buffer[..len]);
             }
 
-            *p_state.duration.write().unwrap() = p_state.decoder.as_ref().unwrap().duration();
-            *p_state.position.write().unwrap() = p_state.decoder.as_ref().unwrap().position();
-            *p_state.metadata.write().unwrap() = p_state.decoder.as_ref().unwrap().metadata();
+            let delay = aud_out.buffer_delay();
+            //dbg!(delay);
+
+            player_state.set_times(
+                dec.duration(),
+                dec.position().map(|d| d - delay)
+            );
+
+            *player_state.metadata.write().unwrap() = dec.metadata();
             //info!("buffer {:0.0}%", (p_state.audio_output.as_mut().unwrap().buffer_level().0 as f32 / p_state.audio_output.as_mut().unwrap().buffer_level().1 as f32) * 100.0);
         }
 
         // Prevent this from hogging a core
-        thread::sleep(LOOP_DELAY_US);
+        thread::sleep(LOOP_DELAY);
+    }
+}
+
+struct PlayerState {
+    playback_state: Arc<RwLock<State>>,
+    position: Arc<RwLock<Option<Duration>>>,
+    duration: Arc<RwLock<Option<Duration>>>,
+    metadata: Arc<RwLock<HashMap<String, String>>>,
+}
+
+impl PlayerState {
+    /// Sets the shared variables to the "stopped" state
+    fn set_state(&mut self, state: State) {
+        *self.playback_state.write().unwrap() = state;
+
+        match state {
+            State::Stopped | State::Errored => {
+                *self.position.write().unwrap() = None;
+                *self.duration.write().unwrap() = None;
+                self.metadata.write().unwrap().clear();
+            },
+            State::Playing => (),
+            State::Paused => (),
+            State::Buffering(_) => (),
+        }
+    }
+
+    fn set_times(
+        &mut self,
+        duration: Option<Duration>,
+        position: Option<Duration>,
+    ) {
+        *self.duration.write().unwrap() = duration;
+        *self.position.write().unwrap() = position;
     }
 }
