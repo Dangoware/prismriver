@@ -1,7 +1,7 @@
 use std::io::{self, Write};
 use std::thread::sleep;
 
-use chrono::{Duration, TimeDelta};
+use chrono::Duration;
 
 use fluent_uri::Uri;
 use prismriver::utils::path_to_uri;
@@ -14,9 +14,9 @@ fn main() {
     let mut player = Prismriver::new();
     player.set_volume(Volume::new(0.4));
 
-    let mut paths = std::env::args().skip(1).enumerate().peekable();
+    let mut paths = std::env::args().skip(1).peekable();
 
-    'main: while let Some((i, path)) = paths.next() {
+    'main: while let Some(path) = paths.next() {
         println!("Loading... {}", path);
 
         let uri = if path.starts_with("http") {

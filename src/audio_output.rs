@@ -6,7 +6,7 @@ use cpal::{
 use log::{error, info, warn};
 use rb::{RbConsumer as _, RbInspector, RbProducer, RB as _};
 use samplerate::{ConverterType, Samplerate};
-use std::{ops::Mul, sync::{atomic::{AtomicBool, AtomicU64, Ordering}, Arc}};
+use std::{ops::Mul, sync::{atomic::{AtomicU64, Ordering}, Arc}};
 
 use crate::decode::StreamParams;
 
@@ -74,23 +74,14 @@ pub trait AudioOutput {
     /// Update input stream parameters, used for internal calculations.
     fn update_input_params(&mut self, params: StreamParams);
 
-    fn buffering(&self) -> bool;
-
-    fn set_buffering(&self, buffering: bool);
-
     /// Gets the current level of the buffer in bytes.
     fn buffer_level(&self) -> usize;
 
     /// Gets the current level of the buffer in bytes.
     fn buffer_capacity(&self) -> usize;
 
-    /// Gets the byte size of the "high" level of the buffer, where buffering,
-    /// stops
-    fn buffer_high(&self) -> usize;
-
-    /// Gets the byte size of the "low" level of the buffer, where buffering
-    /// begins
-    fn buffer_low(&self) -> usize;
+    /// Prints the size in bytes of the "healthy" level of the buffer.
+    fn buffer_healthy(&self) -> usize;
 
     /// Calculates the delay until the buffer is empty and the last sample plays.
     fn buffer_delay(&self) -> Duration {
@@ -122,7 +113,6 @@ pub struct AudioOutputInner {
     volume: Volume,
     channels: u16,
     state: bool,
-    buffering: Arc<AtomicBool>,
 
     input_params: Option<StreamParams>,
     output_stream: Stream,
@@ -175,16 +165,10 @@ impl AudioOutputInner {
 
         let bytes_written = Arc::new(AtomicU64::new(0));
         let bytes_thread = Arc::clone(&bytes_written);
-        let buffering = Arc::new(AtomicBool::new(true));
-        let buffering_thread = Arc::clone(&buffering);
         let output_stream = device
             .build_output_stream(
                 &output_params,
                 move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                    if buffering_thread.load(Ordering::Relaxed) {
-                        return
-                    }
-
                     // Write out as many samples as possible from the ring buffer to the audio
                     // output.
                     let written = ring_buf_consumer.read(data).unwrap_or(0);
@@ -207,7 +191,6 @@ impl AudioOutputInner {
             volume: Volume::default(),
             channels: out_ch,
             state: false,
-            buffering,
 
             input_params: None,
             output_stream,
@@ -255,9 +238,9 @@ impl AudioOutput for AudioOutputInner {
 
         // Write all samples to the ring buffer.
         let mut offset = 0;
-        while let Ok(Some(written)) = self
+        while let Some(written) = self
             .ring_buf_producer
-            .write_blocking_timeout(&processed_samples[offset..], std::time::Duration::from_millis(100))
+            .write_blocking(&processed_samples[offset..])
         {
             if written == 0 {
                 break;
@@ -337,14 +320,6 @@ impl AudioOutput for AudioOutputInner {
         self.channels = params.channels;
     }
 
-    fn buffering(&self) -> bool {
-        self.buffering.load(Ordering::Relaxed)
-    }
-
-    fn set_buffering(&self, buffering: bool) {
-        self.buffering.store(buffering, Ordering::Relaxed);
-    }
-
     fn buffer_level(&self) -> usize {
         self.ring_buf.count()
     }
@@ -353,12 +328,8 @@ impl AudioOutput for AudioOutputInner {
         self.ring_buf.capacity()
     }
 
-    fn buffer_high(&self) -> usize {
+    fn buffer_healthy(&self) -> usize {
         self.ring_buf.capacity() - (self.ring_buf.capacity() / 5)
-    }
-
-    fn buffer_low(&self) -> usize {
-        self.ring_buf.capacity() / 8
     }
 
     fn bytes_written(&self) -> u64 {
