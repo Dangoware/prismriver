@@ -145,6 +145,7 @@ pub struct Prismriver {
 
     internal_send: channel::Sender<InternalMessage>,
     internal_recvback: channel::Receiver<Result<(), Error>>,
+    finished_recv: channel::Receiver<()>,
 
     uri_current: Option<Uri<String>>,
 
@@ -163,6 +164,7 @@ impl Prismriver {
     pub fn new() -> Prismriver {
         let (internal_send, internal_recv) = channel::bounded(1);
         let (internal_sendback, internal_recvback) = channel::bounded(1);
+        let (finished_send, finished_recv) = channel::bounded(1);
 
         let state = Arc::new(RwLock::new(State::Stopped));
         let position = Arc::new(RwLock::new(None));
@@ -181,6 +183,7 @@ impl Prismriver {
                     player_loop(
                         internal_recv,
                         internal_sendback,
+                        finished_send,
                         state,
                         position,
                         duration,
@@ -209,8 +212,29 @@ impl Prismriver {
             uri_current: None,
             internal_send,
             internal_recvback,
+            finished_recv,
             metadata,
         }
+    }
+
+    pub fn block_until_finished(&self) {
+        if *self.state.read().unwrap() == State::Stopped {
+            return
+        }
+
+        self.finished_recv.recv().unwrap();
+    }
+
+    pub fn block_until_finished_or_timeout(&self, timeout: std::time::Duration) {
+        if *self.state.read().unwrap() == State::Stopped {
+            return
+        }
+
+        self.finished_recv.recv_timeout(timeout).unwrap();
+    }
+
+    pub fn finished(&self) -> bool {
+        self.finished_recv.try_recv().is_ok()
     }
 
     /// Internal function to communicate with the playback thread.
@@ -322,6 +346,7 @@ const BUFFER_MAX: u64 = 240_000 / size_of::<f32>() as u64; // 240 KB
 fn player_loop(
     internal_recv: Receiver<InternalMessage>,
     internal_send: Sender<Result<(), Error>>,
+    finished_send: Sender<()>,
     playback_state: Arc<RwLock<State>>,
     position: Arc<RwLock<Option<Duration>>>,
     duration: Arc<RwLock<Option<Duration>>>,
@@ -459,19 +484,18 @@ fn player_loop(
                 player_state.set_times(
                     dur,
                     dur.map(|d| {
-                        //dbg!(d.num_milliseconds(), aud_out.buffer_delay().num_milliseconds());
                         (d - aud_out.calculate_delay(pregap_buffer - (aud_out.bytes_written() - pregap_written))).clamp(TimeDelta::zero(), TimeDelta::MAX)
                     })
                 );
-
-                if aud_out.bytes_written() - pregap_written >= pregap_buffer as u64 {
-                    player_state.stream_ending = false;
-                }
 
                 if aud_out.buffer_level() == 0 {
                     aud_out.flush();
                     *flag.write().unwrap() = None;
                     player_state.set_state(State::Stopped);
+                    finished_send.try_send(()).unwrap();
+                } else if aud_out.bytes_written() - pregap_written >= pregap_buffer as u64 {
+                    player_state.stream_ending = false;
+                    finished_send.try_send(()).unwrap();
                 }
             }
 

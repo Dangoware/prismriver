@@ -13,6 +13,9 @@ log = "0.4"
 rb = "0.4"
 samplerate = { git="https://github.com/G2-Games/rust-samplerate.git" }
 thiserror = "2.0"
+
+# So far, only Windows needs thread priority
+[target.'cfg(windows)'.dependencies]
 thread-priority = "1.2"
 
 [dependencies.ffmpeg-next]
