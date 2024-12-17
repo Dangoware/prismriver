@@ -4,10 +4,10 @@ simple, cross platform, high quality audio output.
 
 ## Goals
 The overall goal of Prismriver is not to create an all-rust playback 
-library, those already exist. Instead, it's supposed to function similarly
+library; those already exist. Instead, it is intended to function similarly
 to Gstreamer, where one frontend can be used to build multimedia applications
 easily. Because of that, being 100% Rust is not a goal of this project,
-except where that would improve cross compilation or ease development.
+except where doing so would improve cross compilation or ease development.
 
 ## Functionality/Roadmap
 - [x] Cross platform output with CPAL
@@ -15,7 +15,8 @@ except where that would improve cross compilation or ease development.
     - [x] [symphonia](https://github.com/pdeljanov/Symphonia)
     - [x] ffmpeg
     - [ ] Audio CD
-- [ ] Gapless
+- [x] Gapless
+- [x] Streaming metadata retrieval
 
 ## Acknowledgements
 The functionality of this library is inspired by the PHAzOR audio playback
