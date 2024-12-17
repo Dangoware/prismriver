@@ -255,9 +255,9 @@ impl AudioOutput for AudioOutputInner {
 
         // Write all samples to the ring buffer.
         let mut offset = 0;
-        while let Ok(written) = self
+        while let Ok(Some(written)) = self
             .ring_buf_producer
-            .write(&processed_samples[offset..])
+            .write_blocking_timeout(&processed_samples[offset..], std::time::Duration::from_millis(100))
         {
             if written == 0 {
                 break;
@@ -354,7 +354,7 @@ impl AudioOutput for AudioOutputInner {
     }
 
     fn buffer_high(&self) -> usize {
-        self.ring_buf.capacity() - (self.ring_buf.capacity() / 6)
+        self.ring_buf.capacity() - (self.ring_buf.capacity() / 5)
     }
 
     fn buffer_low(&self) -> usize {
