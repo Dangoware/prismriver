@@ -281,9 +281,26 @@ impl Prismriver {
         *self.state.read().unwrap()
     }
 
-    /// Set the current playback [`State`].
-    pub fn set_state(&mut self, state: State) {
-        *self.state.write().unwrap() = state
+    /// Set the player's mode to [`State::Playing`].
+    ///
+    /// This will start any loaded streams.
+    pub fn play(&mut self) {
+        *self.state.write().unwrap() = State::Playing
+    }
+
+    /// Set the player's mode to [`State::Stopped`].
+    ///
+    /// This will discard any loaded streams and reset the player to the initial
+    /// state.
+    pub fn stop(&mut self) {
+        *self.state.write().unwrap() = State::Stopped
+    }
+
+    /// Set the player's mode to [`State::Paused`].
+    ///
+    /// This will pause playback of any loaded streams, but keep them loaded.
+    pub fn pause(&mut self) {
+        *self.state.write().unwrap() = State::Paused
     }
 
     /// Get the current [`Flag`] status.

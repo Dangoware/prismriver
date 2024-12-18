@@ -1,4 +1,4 @@
-use std::io::{self, Write};
+use std::io::{self, Write as _};
 use std::thread::sleep;
 
 use chrono::Duration;
@@ -20,10 +20,10 @@ fn main() {
     loop {
         player.load_new(&path).unwrap();
 
-        player.set_state(State::Playing);
+        player.play();
 
         while player.state() == State::Playing || player.state() == State::Paused {
-            sleep(std::time::Duration::from_millis(100));
+            sleep(std::time::Duration::from_millis(25));
             print_timer(player.position(), player.duration());
 
             if player.finished() {
