@@ -12,10 +12,13 @@ pub mod ffmpeg;
 // End of mods and stuff ----
 // --------------------------
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, Clone, PartialEq, Eq)]
 pub enum DecoderError {
-    #[error("Internal decoder error {}", 0)]
+    #[error("{0}")]
     InternalError(String),
+
+    #[error("Decode timed out")]
+    DecodeTimeout,
 
     #[error("Failed to decode packet")]
     DecodeFailed,

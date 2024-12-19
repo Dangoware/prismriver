@@ -151,16 +151,18 @@ impl Drop for FfmpegDecoder {
 
 impl Decoder for FfmpegDecoder {
     fn next_packet_to_buf(&mut self, buf: &mut [f32]) -> Result<usize, DecoderError> {
-        let data = match self.data_recv.recv() {
+        let timeout = std::time::Duration::from_millis(1000);
+        // If the recv operation times out within 1 second, return an error
+        let timer = std::time::Instant::now();
+        let data = match self.data_recv.recv_timeout(timeout) {
             Ok(l) => l,
             Err(_) if *self.ended.read().unwrap() => return Err(DecoderError::EndOfStream),
-            Err(_) => {
-                return {
-                    Err(DecoderError::InternalError(
-                        "Fatal stream error".to_string(),
-                    ))
-                }
-            }
+            Err(_) if timer.elapsed() >= timeout => return {
+                Err(DecoderError::DecodeTimeout)
+            },
+            Err(_) => return {
+                Err(DecoderError::InternalError("Fatal stream error".to_string()))
+            },
         };
         buf[..data.len()].copy_from_slice(&data);
 

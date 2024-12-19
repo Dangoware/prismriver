@@ -82,7 +82,7 @@ enum InternalMessage {
 }
 
 /// The current playback state of a [`Prismriver`] instance.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub enum State {
     /// The playback is stopped, and nothing is loaded.
     #[default]
@@ -93,7 +93,7 @@ pub enum State {
     Playing,
     /// This state will be set if there was a fatal decoder error, otherwise it
     /// should never be set.
-    Errored,
+    Errored(Error),
     /// Unused for right now, this should be set while the player is buffering
     /// network data.
     Buffering(u8),
@@ -112,10 +112,10 @@ pub enum Flag {
 }
 
 /// An error that a [`Prismriver`] instance can throw.
-#[derive(thiserror::Error, Debug)]
+#[derive(thiserror::Error, Debug, Clone, PartialEq, Eq)]
 pub enum Error {
     /// Internal decoder error.
-    #[error("Internal decoder error {}", 0)]
+    #[error("Internal error: {0}")]
     DecoderError(#[from] decode::DecoderError),
 
     /// The file given is a format incapable of being played.
@@ -278,7 +278,7 @@ impl Prismriver {
 
     /// Get the current playback [`State`].
     pub fn state(&self) -> State {
-        *self.state.read().unwrap()
+        self.state.read().unwrap().clone()
     }
 
     /// Set the player's mode to [`State::Playing`].
@@ -486,7 +486,7 @@ fn player_loop(
             }
         }
 
-        let state = *player_state.playback_state.read().unwrap();
+        let state = player_state.playback_state.read().unwrap().clone();
         if state == State::Playing {
             let Some(aud_out) = audio_output.as_mut() else {
                 player_state.set_state(State::Stopped);
@@ -546,9 +546,9 @@ fn player_loop(
                     }
                     Err(de) => {
                         // Fatal decoder error
-                        let _ = internal_send.send(Err(Error::DecoderError(de)));
+                        let _ = internal_send.send(Err(Error::DecoderError(de.clone())));
                         decoder = None;
-                        player_state.set_state(State::Stopped);
+                        player_state.set_state(State::Errored(Error::DecoderError(de.clone())));
                         continue 'external;
                     }
                 };
@@ -599,10 +599,10 @@ struct PlayerState {
 impl PlayerState {
     /// Sets the shared variables to the "stopped" state
     fn set_state(&mut self, state: State) {
-        *self.playback_state.write().unwrap() = state;
+        *self.playback_state.write().unwrap() = state.clone();
 
         match state {
-            State::Stopped | State::Errored => {
+            State::Stopped | State::Errored(_) => {
                 *self.position.write().unwrap() = None;
                 *self.duration.write().unwrap() = None;
                 self.metadata.write().unwrap().clear();

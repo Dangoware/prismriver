@@ -16,6 +16,11 @@ fn main() {
 
     let mut paths = std::env::args().skip(1).peekable();
 
+    if paths.len() == 0 {
+        println!("Please input a filename or URL");
+        return;
+    }
+
     let mut path = make_uri(paths.next().unwrap());
     loop {
         player.load_new(&path).unwrap();
@@ -23,16 +28,20 @@ fn main() {
         player.play();
 
         while player.state() == State::Playing || player.state() == State::Paused {
-            sleep(std::time::Duration::from_millis(25));
+            sleep(std::time::Duration::from_millis(5));
             print_timer(player.position(), player.duration());
 
             if player.finished() {
-                println!("thing");
+                // Do something?
             }
 
             if paths.peek().is_some() && player.flag() == Some(Flag::AboutToFinish) {
                 break;
             }
+        }
+
+        if let State::Errored(e) = player.state() {
+            log::error!("{e}");
         }
 
         if let Some(p) = paths.next() {
