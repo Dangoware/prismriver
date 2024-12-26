@@ -59,7 +59,7 @@ use chrono::{Duration, TimeDelta};
 use cpal::{traits::HostTrait as _, Device};
 use crossbeam::channel::{self, Receiver, Sender};
 use fluent_uri::Uri;
-use log::{info, warn};
+use log::{debug, info, warn};
 
 enum InternalMessage {
     /// Set a volume level
@@ -253,7 +253,18 @@ impl Prismriver {
     }
 
     /// Load a new stream.
+    ///
+    /// This flushes all buffers and immediately plays the new stream.
     pub fn load_new(&mut self, uri: &Uri<String>) -> Result<(), Error> {
+        self.uri_current = Some(uri.clone());
+        self.send_recv(InternalMessage::LoadNew(uri.clone(), true))
+    }
+
+    /// Load a new stream.
+    ///
+    /// This does not flush any buffers and will continue playing the previous stream
+    /// until the buffer runs out, ensuring gapless transitions.
+    pub fn load_gapless(&mut self, uri: &Uri<String>) -> Result<(), Error> {
         self.uri_current = Some(uri.clone());
         self.send_recv(InternalMessage::LoadNew(uri.clone(), false))
     }
@@ -430,13 +441,12 @@ fn player_loop(
 
                     if let Some(d) = decoder.as_ref() {
                         stream_params = Some(d.params());
-                        audio_output.update_input_params(stream_params.unwrap());
-                        player_state.load_new();
-                        *flag.write().unwrap() = None;
-
                         if replace {
                             audio_output.flush();
                         }
+                        audio_output.update_input_params(stream_params.unwrap());
+                        player_state.load_new();
+                        *flag.write().unwrap() = None;
 
                         internal_send.try_send(Ok(())).unwrap();
                     } else {
@@ -509,10 +519,10 @@ fn player_loop(
                     aud_out.flush();
                     *flag.write().unwrap() = None;
                     player_state.set_state(State::Stopped);
-                    finished_send.try_send(()).unwrap();
+                    let _ = finished_send.try_send(());
                 } else if aud_out.bytes_written() - pregap_written >= pregap_buffer as u64 {
                     player_state.stream_ending = false;
-                    finished_send.try_send(()).unwrap();
+                    let _ = finished_send.try_send(());
                 }
             }
 
@@ -525,13 +535,6 @@ fn player_loop(
                 //&& !player_state.stream_ending
                 && aud_out.buffer_level() < aud_out.buffer_healthy()
             {
-                if timer.elapsed() > LOOP_DELAY {
-                    // Never get stuck in here too long, but if this happens the
-                    // decoding speed is too slow
-                    warn!("decoding took more than {}ms, buffer level {:0.2}%", LOOP_DELAY.as_millis(), aud_out.buffer_percent());
-                    break;
-                }
-
                 let len = match decoder.as_mut().unwrap().next_packet_to_buf(&mut output_buffer) {
                     Ok(l) => l,
                     Err(decode::DecoderError::EndOfStream) => {
@@ -567,6 +570,19 @@ fn player_loop(
                 }
 
                 *player_state.metadata.write().unwrap() = decoder.as_ref().unwrap().metadata();
+
+                if timer.elapsed() > LOOP_DELAY * 4 {
+                    // Never get stuck in here too long, but if this happens the
+                    // decoding speed is too slow
+                    debug!(
+                        "decoding took more than {}ms ({}ms), buffer level {:0.2}%, last decoded packet was {} bytes",
+                        LOOP_DELAY.as_millis() * 4,
+                        timer.elapsed().as_millis(),
+                        aud_out.buffer_percent(),
+                        len,
+                    );
+                    break;
+                }
             }
 
             //info!("buffer {:0.0}%", aud_out.buffer_percent());

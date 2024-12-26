@@ -52,7 +52,7 @@ pub trait AudioOutput {
     /// Write some samples into the buffer to be played.
     fn write(&mut self, decoded: &[f32]);
 
-    /// Flush the remaining samples from the resampler.
+    /// Flush the remaining samples from all internal buffers.
     fn flush(&mut self);
 
     /// Call on a seek to prevent audio weirdness.
@@ -258,18 +258,11 @@ impl AudioOutput for AudioOutputInner {
     }
 
     fn flush(&mut self) {
-        // If there is a resampler, then it may need to be flushed
-        // depending on the number of samples it has.
-        if let Some(resampler) = &mut self.resampler {
-            let mut remaining_samples = resampler.process_last(&[]).unwrap_or_default();
+        // Kill the resampler
+        self.resampler = None;
 
-            while let Some(written) = self.ring_buf_producer.write_blocking(&remaining_samples) {
-                remaining_samples = remaining_samples[written..].to_vec();
-            }
-        }
-
-        // Flush is best-effort, ignore the returned result.
-        self.state = false;
+        // Clear the entire buffer as well
+        self.ring_buf.clear();
     }
 
     fn set_volume(&mut self, vol: Volume) {
