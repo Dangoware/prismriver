@@ -497,6 +497,16 @@ fn player_loop(
         }
 
         let state = player_state.playback_state.read().unwrap().clone();
+        if audio_output.is_some() && state == State::Paused {
+            if !audio_output.as_ref().unwrap().paused() {
+                audio_output.as_mut().unwrap().set_paused(true);
+            }
+        } else if audio_output.is_some() {
+            if audio_output.as_ref().unwrap().paused() {
+                audio_output.as_mut().unwrap().set_paused(false);
+            }
+        }
+
         if state == State::Playing {
             let Some(aud_out) = audio_output.as_mut() else {
                 player_state.set_state(State::Stopped);

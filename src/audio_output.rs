@@ -3,10 +3,11 @@ use cpal::{
     traits::{DeviceTrait as _, StreamTrait},
     Stream, StreamConfig,
 };
+use crossbeam::atomic::AtomicCell;
 use log::{error, info, warn};
 use rb::{RbConsumer as _, RbInspector, RbProducer, RB as _};
 use samplerate::{ConverterType, Samplerate};
-use std::{ops::Mul, sync::{atomic::{AtomicU64, Ordering}, Arc}};
+use std::{ops::Mul, sync::{atomic::{AtomicBool, AtomicU64, Ordering}, Arc}};
 
 use crate::decode::StreamParams;
 
@@ -26,6 +27,7 @@ pub fn open_output(device: &cpal::Device) -> Result<Box<dyn AudioOutput>, AudioO
     Ok(Box::new(AudioOutputInner::new(device)))
 }
 
+/// Interleave planar samples
 pub fn interleave(planar: &[f32], channels: usize, output_channels: usize) -> Vec<f32> {
     let channel_len = planar.len() / channels;
     let mut interleaved = vec![0.; channel_len * output_channels];
@@ -64,6 +66,12 @@ pub trait AudioOutput {
     /// Get the volume (amplitude) of the output.
     #[allow(dead_code)]
     fn volume(&self) -> Volume;
+
+    /// Get the state of the output being paused.
+    fn paused(&self) -> bool;
+
+    /// Set the output to be paused or not.
+    fn set_paused(&self, paused: bool);
 
     fn params(&self) -> StreamConfig;
 
@@ -110,7 +118,6 @@ pub struct AudioOutputInner {
     ring_buf: rb::SpscRb<f32>,
     ring_buf_producer: rb::Producer<f32>,
     resampler: Option<samplerate::Samplerate>,
-    volume: Volume,
     channels: u16,
     state: bool,
 
@@ -119,6 +126,8 @@ pub struct AudioOutputInner {
     output_params: StreamConfig,
 
     bytes_written: Arc<AtomicU64>,
+    paused: Arc<AtomicBool>,
+    volume: Arc<AtomicCell<Volume>>,
 }
 
 const OUTPUT_RATE_HZ: u32 = 44_100;
@@ -164,14 +173,25 @@ impl AudioOutputInner {
         let (ring_buf_producer, ring_buf_consumer) = (ring_buf.producer(), ring_buf.consumer());
 
         let bytes_written = Arc::new(AtomicU64::new(0));
+        let paused = Arc::new(AtomicBool::new(false));
+        let volume = Arc::new(AtomicCell::new(Volume::default()));
         let bytes_thread = Arc::clone(&bytes_written);
+        let paused_thread = Arc::clone(&paused);
+        let thread_volume = Arc::clone(&volume);
         let output_stream = device
             .build_output_stream(
                 &output_params,
                 move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                    if paused_thread.load(Ordering::Relaxed) {
+                        return
+                    }
+
                     // Write out as many samples as possible from the ring buffer to the audio
                     // output.
                     let written = ring_buf_consumer.read(data).unwrap_or(0);
+
+                    data.iter_mut()
+                        .for_each(|s| *s = s.mul(thread_volume.load().as_f32()));
 
                     let orig = bytes_thread.load(Ordering::Relaxed);
                     bytes_thread.store(orig + written as u64, Ordering::Relaxed);
@@ -188,7 +208,7 @@ impl AudioOutputInner {
             ring_buf,
             ring_buf_producer,
             resampler: None,
-            volume: Volume::default(),
+            volume,
             channels: out_ch,
             state: false,
 
@@ -197,6 +217,7 @@ impl AudioOutputInner {
             output_params,
 
             bytes_written,
+            paused,
         }
     }
 }
@@ -219,7 +240,7 @@ impl AudioOutput for AudioOutputInner {
         let decoded = interleave(decoded, self.channels as usize, self.output_params.channels as usize);
 
         // Resample if resampler exists
-        let mut processed_samples = if let Some(resampler) = &mut self.resampler {
+        let processed_samples = if let Some(resampler) = &mut self.resampler {
             match resampler.process(&decoded) {
                 Ok(resampled) => resampled,
                 Err(_) => return,
@@ -227,14 +248,6 @@ impl AudioOutput for AudioOutputInner {
         } else {
             decoded
         };
-
-        // Set the sample amplitude (volume) for every sample
-        // This is obviously not necessary if the volume is not changed
-        if self.volume != 1.0 {
-            processed_samples
-                .iter_mut()
-                .for_each(|s| *s = s.mul(self.volume.as_f32()));
-        }
 
         // Write all samples to the ring buffer.
         let mut offset = 0;
@@ -266,11 +279,19 @@ impl AudioOutput for AudioOutputInner {
     }
 
     fn set_volume(&mut self, vol: Volume) {
-        self.volume = vol
+        self.volume.store(vol);
     }
 
     fn volume(&self) -> Volume {
-        self.volume
+        self.volume.load()
+    }
+
+    fn paused(&self) -> bool {
+        self.paused.load(Ordering::Relaxed)
+    }
+
+    fn set_paused(&self, paused: bool) {
+        self.paused.store(paused, Ordering::Relaxed);
     }
 
     fn params(&self) -> StreamConfig {
