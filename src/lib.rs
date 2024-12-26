@@ -217,6 +217,7 @@ impl Prismriver {
         }
     }
 
+    /// Block the current thread until playback of the current item has finished.
     pub fn block_until_finished(&self) {
         if *self.state.read().unwrap() == State::Stopped {
             return
@@ -225,6 +226,8 @@ impl Prismriver {
         self.finished_recv.recv().unwrap();
     }
 
+    /// Block the current thread until playback of the current item has finished or
+    /// the timeout is reached.
     pub fn block_until_finished_or_timeout(&self, timeout: std::time::Duration) {
         if *self.state.read().unwrap() == State::Stopped {
             return
@@ -233,6 +236,7 @@ impl Prismriver {
         self.finished_recv.recv_timeout(timeout).unwrap();
     }
 
+    /// Returns a [`bool`] indicating if the playback of the current track has finished.
     pub fn finished(&self) -> bool {
         self.finished_recv.try_recv().is_ok()
     }
@@ -404,7 +408,7 @@ fn player_loop(
 
     // Set thread priority on Windows to avoid stutters
     // TODO: Do we have any other problems on other platforms?
-    // Linux seems to be fine
+    // Linux and MacOS seem to be fine
     #[cfg(target_os = "windows")]
     {
         use thread_priority::*;
@@ -497,13 +501,15 @@ fn player_loop(
         }
 
         let state = player_state.playback_state.read().unwrap().clone();
-        if audio_output.is_some() && state == State::Paused {
-            if !audio_output.as_ref().unwrap().paused() {
-                audio_output.as_mut().unwrap().set_paused(true);
-            }
-        } else if audio_output.is_some() {
-            if audio_output.as_ref().unwrap().paused() {
-                audio_output.as_mut().unwrap().set_paused(false);
+        if audio_output.is_some() {
+            if state == State::Paused {
+                if !audio_output.as_ref().unwrap().paused() {
+                    audio_output.as_mut().unwrap().set_paused(true);
+                }
+            } else {
+                if audio_output.as_ref().unwrap().paused() {
+                    audio_output.as_mut().unwrap().set_paused(false);
+                }
             }
         }
 

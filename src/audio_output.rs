@@ -165,7 +165,7 @@ impl AudioOutputInner {
             buffer_size: cpal::BufferSize::Default,
         };
 
-        // Create a ring buffer with a capacity for up-to 200ms of audio.
+        // The ring buffer is the primary output buffer and has a capacity of `RINGBUFFER_DURATION`
         let ring_len =
             ((RINGBUFFER_DURATION * output_params.sample_rate.0 as usize) / 1000) * output_params.channels as usize;
 
