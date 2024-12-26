@@ -183,6 +183,7 @@ impl AudioOutputInner {
                 &output_params,
                 move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                     if paused_thread.load(Ordering::Relaxed) {
+                        data.fill(0f32);
                         return
                     }
 
