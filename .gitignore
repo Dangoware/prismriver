@@ -5,3 +5,5 @@ Cargo.lock
 *.wav
 *.mp3
 *.flac
+
+*.DS_Store
