@@ -404,7 +404,7 @@ fn player_loop(
     };
 
     let mut pregap_written = 0;
-    let mut pregap_buffer = 0;
+    let mut pregap_buffer: u64 = 0;
 
     // Set thread priority on Windows to avoid stutters
     // TODO: Do we have any other problems on other platforms?
@@ -527,7 +527,9 @@ fn player_loop(
                 player_state.set_times(
                     dur,
                     dur.map(|d| {
-                        (d - aud_out.calculate_delay(pregap_buffer - (aud_out.bytes_written() - pregap_written))).clamp(TimeDelta::zero(), TimeDelta::MAX)
+                        (d - aud_out.calculate_delay(
+                            pregap_buffer.saturating_sub(aud_out.bytes_written().saturating_sub(pregap_written))
+                        )).clamp(TimeDelta::zero(), TimeDelta::MAX)
                     })
                 );
 
