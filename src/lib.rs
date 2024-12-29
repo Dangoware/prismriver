@@ -164,7 +164,7 @@ impl Prismriver {
     pub fn new() -> Prismriver {
         let (internal_send, internal_recv) = channel::bounded(1);
         let (internal_sendback, internal_recvback) = channel::bounded(1);
-        let (finished_send, finished_recv) = channel::bounded(1);
+        let (finished_send, finished_recv) = channel::bounded(0);
 
         let state = Arc::new(RwLock::new(State::Stopped));
         let position = Arc::new(RwLock::new(None));
@@ -234,6 +234,11 @@ impl Prismriver {
         }
 
         self.finished_recv.recv_timeout(timeout).unwrap();
+    }
+
+    /// Gets the reciever for when a track finishes playing
+    pub fn get_finished_recv(&self) -> Receiver<()> {
+        self.finished_recv.clone()
     }
 
     /// Returns a [`bool`] indicating if the playback of the current track has finished.
