@@ -21,18 +21,20 @@ fn main() {
         return;
     }
 
-    let mut path = make_uri(paths.next().unwrap());
+    let mut path = paths.next().unwrap();
+    let mut path_uri = make_uri(path.clone());
     loop {
-        player.load_new(&path).unwrap();
+        println!("Playing \"{}\"", path);
+        player.load_new(&path_uri).unwrap();
 
         player.play();
 
         while player.state() == State::Playing || player.state() == State::Paused {
-            sleep(std::time::Duration::from_millis(5));
+            sleep(std::time::Duration::from_millis(10));
             print_timer(player.position(), player.duration());
 
-            if player.finished() {
-                // Do something?
+            if player.position() >= Some(Duration::seconds(4)) {
+                player.stop().unwrap();
             }
 
             if paths.peek().is_some() && player.flag() == Some(Flag::AboutToFinish) {
@@ -45,7 +47,8 @@ fn main() {
         }
 
         if let Some(p) = paths.next() {
-            path = make_uri(p);
+            path = p;
+            path_uri = make_uri(path.clone());
         } else {
             break
         }

@@ -74,6 +74,9 @@ enum InternalMessage {
     /// stream and flush all buffers.
     LoadNew(Uri<String>, bool),
 
+    /// Remove the current stream and flush all buffers immediately, stopping playback.
+    RemoveCurrent,
+
     /// Give the thread a new output device
     NewOutputDevice(Device),
 
@@ -312,8 +315,9 @@ impl Prismriver {
     ///
     /// This will discard any loaded streams and reset the player to the initial
     /// state.
-    pub fn stop(&mut self) {
-        *self.state.write().unwrap() = State::Stopped
+    pub fn stop(&mut self) -> Result<(), Error> {
+        *self.state.write().unwrap() = State::Stopped;
+        self.send_recv(InternalMessage::RemoveCurrent)
     }
 
     /// Set the player's mode to [`State::Paused`].
@@ -465,6 +469,18 @@ fn player_loop(
                             .unwrap();
                     }
                 }
+                InternalMessage::RemoveCurrent => {
+                    let Some(audio_output) = audio_output.as_mut() else {
+                        panic!("This shouldn't be possible!")
+                    };
+
+                    // Set the decoder to None and flush the buffers
+                    decoder = None;
+                    audio_output.flush();
+                    player_state.set_state(State::Stopped);
+
+                    internal_send.try_send(Ok(())).unwrap()
+                }
                 InternalMessage::Volume(v) => {
                     volume = v;
                     if let Some(a) = audio_output.as_mut() {
@@ -507,7 +523,7 @@ fn player_loop(
 
         let state = player_state.playback_state.read().unwrap().clone();
         if audio_output.is_some() {
-            if state == State::Paused {
+            if state == State::Paused || state == State::Stopped {
                 if !audio_output.as_ref().unwrap().paused() {
                     audio_output.as_mut().unwrap().set_paused(true);
                 }
@@ -609,7 +625,9 @@ fn player_loop(
             }
 
             //info!("buffer {:0.0}%", aud_out.buffer_percent());
-        } else if decoder.is_some() && state == State::Stopped {
+        }
+
+        if decoder.is_some() && state == State::Stopped {
             // This would happen when the user manually stops playback
             decoder = None;
             player_state.set_state(State::Stopped);
