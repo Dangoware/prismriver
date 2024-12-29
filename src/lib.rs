@@ -315,9 +315,9 @@ impl Prismriver {
     ///
     /// This will discard any loaded streams and reset the player to the initial
     /// state.
-    pub fn stop(&mut self) -> Result<(), Error> {
+    pub fn stop(&mut self) {
         *self.state.write().unwrap() = State::Stopped;
-        self.send_recv(InternalMessage::RemoveCurrent)
+        self.send_recv(InternalMessage::RemoveCurrent).unwrap()
     }
 
     /// Set the player's mode to [`State::Paused`].
