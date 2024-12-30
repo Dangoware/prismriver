@@ -141,7 +141,10 @@ pub enum Error {
 pub struct Prismriver {
     volume: Volume,
 
-    state: Arc<RwLock<State>>,
+    /// The current state of the player.
+    ///
+    /// TODO: Make this private again in the future
+    pub state: Arc<RwLock<State>>,
     position: Arc<RwLock<Option<Duration>>>,
     duration: Arc<RwLock<Option<Duration>>>,
     flag: Arc<RwLock<Option<Flag>>>,
@@ -149,6 +152,7 @@ pub struct Prismriver {
     internal_send: channel::Sender<InternalMessage>,
     internal_recvback: channel::Receiver<Result<(), Error>>,
     finished_recv: channel::Receiver<()>,
+    timing_recv: channel::Receiver<(Option<Duration>, Option<Duration>)>,
 
     uri_current: Option<Uri<String>>,
 
@@ -168,6 +172,7 @@ impl Prismriver {
         let (internal_send, internal_recv) = channel::bounded(1);
         let (internal_sendback, internal_recvback) = channel::bounded(1);
         let (finished_send, finished_recv) = channel::bounded(0);
+        let (timing_send, timing_recv) = channel::bounded(0);
 
         let state = Arc::new(RwLock::new(State::Stopped));
         let position = Arc::new(RwLock::new(None));
@@ -187,6 +192,7 @@ impl Prismriver {
                         internal_recv,
                         internal_sendback,
                         finished_send,
+                        timing_send,
                         state,
                         position,
                         duration,
@@ -216,6 +222,7 @@ impl Prismriver {
             internal_send,
             internal_recvback,
             finished_recv,
+            timing_recv,
             metadata,
         }
     }
@@ -239,14 +246,14 @@ impl Prismriver {
         self.finished_recv.recv_timeout(timeout).unwrap();
     }
 
-    /// Gets the reciever for when a track finishes playing
+    /// Gets the receiver for when a track finishes playing
     pub fn get_finished_recv(&self) -> Receiver<()> {
         self.finished_recv.clone()
     }
 
-    /// Returns a [`bool`] indicating if the playback of the current track has finished.
-    pub fn finished(&self) -> bool {
-        self.finished_recv.try_recv().is_ok()
+    /// Gets the receiver for timing information
+    pub fn get_timing_recv(&self) -> Receiver<(Option<TimeDelta>, Option<TimeDelta>)> {
+        self.timing_recv.clone()
     }
 
     /// Internal function to communicate with the playback thread.
@@ -388,6 +395,7 @@ fn player_loop(
     internal_recv: Receiver<InternalMessage>,
     internal_send: Sender<Result<(), Error>>,
     finished_send: Sender<()>,
+    timing_send: Sender<(Option<TimeDelta>, Option<TimeDelta>)>,
     playback_state: Arc<RwLock<State>>,
     position: Arc<RwLock<Option<Duration>>>,
     duration: Arc<RwLock<Option<Duration>>>,
@@ -545,14 +553,18 @@ fn player_loop(
             // Here is the actual EndOfStream handler
             if player_state.stream_ending {
                 let dur = player_state.duration.read().unwrap().clone();
+                let pos = dur.map(|d| {
+                    (d - aud_out.calculate_delay(
+                        pregap_buffer.saturating_sub(aud_out.bytes_written().saturating_sub(pregap_written))
+                    )).clamp(TimeDelta::zero(), TimeDelta::MAX)
+                });
+
                 player_state.set_times(
                     dur,
-                    dur.map(|d| {
-                        (d - aud_out.calculate_delay(
-                            pregap_buffer.saturating_sub(aud_out.bytes_written().saturating_sub(pregap_written))
-                        )).clamp(TimeDelta::zero(), TimeDelta::MAX)
-                    })
+                    pos,
                 );
+
+                timing_send.try_send((dur, pos));
 
                 if aud_out.buffer_level() == 0 {
                     aud_out.flush();
@@ -600,12 +612,17 @@ fn player_loop(
                 player_state.written_bytes += len as u64;
 
                 if !player_state.stream_ending {
+                    let dur = decoder.as_ref().unwrap().duration();
+                    let pos = decoder.as_ref().unwrap().position().map(|d| {
+                        (d - aud_out.buffer_delay()).clamp(TimeDelta::zero(), TimeDelta::MAX)
+                    });
+
                     player_state.set_times(
-                        decoder.as_ref().unwrap().duration(),
-                        decoder.as_ref().unwrap().position().map(|d| {
-                            (d - aud_out.buffer_delay()).clamp(TimeDelta::zero(), TimeDelta::MAX)
-                        })
+                        dur,
+                        pos,
                     );
+
+                    timing_send.try_send((dur, pos));
                 }
 
                 *player_state.metadata.write().unwrap() = decoder.as_ref().unwrap().metadata();
