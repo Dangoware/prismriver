@@ -12,7 +12,7 @@ use ffmpeg_next::{
     frame, media, rescale, Rational, Rescale as _,
 };
 use fluent_uri::Uri;
-use log::{info, warn};
+use log::{debug, info, warn};
 use std::{
     collections::HashMap,
     path::PathBuf,
@@ -41,7 +41,7 @@ pub struct FfmpegDecoder {
 impl FfmpegDecoder {
     pub fn new(input: &Uri<String>) -> Result<Self, DecoderError> {
         ffmpeg_next::init().map_err(|e| DecoderError::InternalError(e.to_string()))?;
-        //ffmpeg_next::log::set_level(ffmpeg_next::log::Level::Debug);
+        ffmpeg_next::log::set_level(ffmpeg_next::log::Level::Quiet);
 
         let ictx = if input.scheme().as_str().starts_with("http") {
             info!("playing back from network source");
@@ -259,7 +259,7 @@ fn decode_loop(
             temp_map.iter().for_each(|(k, v)| {
                 ext_meta.insert(k.to_string(), v.to_string());
             });
-            info!("found {} new metadata tags", temp_map.len());
+            debug!("found {} new metadata tags", temp_map.len());
             local_metadata = temp_map.clone();
         }
 
