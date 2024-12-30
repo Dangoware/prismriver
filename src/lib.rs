@@ -494,7 +494,7 @@ fn player_loop(
                     if let Some(a) = audio_output.as_mut() {
                         a.set_volume(v)
                     }
-                    info!("volume is now {:0.0}%", v.as_f32() * 100.0);
+                    debug!("volume is now {:0.0}%", v.as_f32() * 100.0);
                 }
                 InternalMessage::Seek(p, relative) => {
                     match if let Some(d) = decoder.as_mut() {

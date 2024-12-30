@@ -34,7 +34,7 @@ fn main() {
             print_timer(player.position(), player.duration());
 
             if player.position() >= Some(Duration::seconds(4)) {
-                player.stop().unwrap();
+                player.stop();
             }
 
             if paths.peek().is_some() && player.flag() == Some(Flag::AboutToFinish) {

@@ -58,7 +58,7 @@ impl FfmpegDecoder {
         for (k, v) in &ictx.metadata() {
             meta_map.insert(k.to_string(), v.to_string());
         }
-        info!("found {} metadata tags", meta_map.len());
+        debug!("found {} metadata tags", meta_map.len());
         let metadata = Arc::new(RwLock::new(meta_map));
 
         let stream = ictx
