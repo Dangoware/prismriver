@@ -467,14 +467,15 @@ fn player_loop(
                         panic!("This shouldn't be possible!")
                     };
 
+                    if replace {
+                        audio_output.flush();
+                    }
+
                     // Try to select a format decoder
                     decoder = utils::pick_format(&uri);
 
                     if let Some(d) = decoder.as_ref() {
                         stream_params = Some(d.params());
-                        if replace {
-                            audio_output.flush();
-                        }
                         audio_output.update_input_params(stream_params.unwrap());
                         player_state.load_new();
                         *flag.write().unwrap() = None;
