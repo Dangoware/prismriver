@@ -151,6 +151,7 @@ pub struct Prismriver {
 
     internal_send: channel::Sender<InternalMessage>,
     internal_recvback: channel::Receiver<Result<(), Error>>,
+    about_to_finish_recv: channel::Receiver<()>,
     finished_recv: channel::Receiver<()>,
     timing_recv: channel::Receiver<(Option<Duration>, Option<Duration>)>,
 
@@ -171,6 +172,7 @@ impl Prismriver {
     pub fn new() -> Prismriver {
         let (internal_send, internal_recv) = channel::bounded(1);
         let (internal_sendback, internal_recvback) = channel::bounded(1);
+        let (about_to_finish_send, about_to_finish_recv) = channel::bounded(0);
         let (finished_send, finished_recv) = channel::bounded(0);
         let (timing_send, timing_recv) = channel::bounded(0);
 
@@ -191,6 +193,7 @@ impl Prismriver {
                     player_loop(
                         internal_recv,
                         internal_sendback,
+                        about_to_finish_send,
                         finished_send,
                         timing_send,
                         state,
@@ -221,6 +224,7 @@ impl Prismriver {
             uri_current: None,
             internal_send,
             internal_recvback,
+            about_to_finish_recv,
             finished_recv,
             timing_recv,
             metadata,
@@ -244,6 +248,11 @@ impl Prismriver {
         }
 
         self.finished_recv.recv_timeout(timeout).unwrap();
+    }
+
+    /// Gets the receiver for when a track is about to finish playing
+    pub fn get_about_to_finish_recv(&self) -> Receiver<()> {
+        self.about_to_finish_recv.clone()
     }
 
     /// Gets the receiver for when a track finishes playing
@@ -394,6 +403,7 @@ const BUFFER_MAX: u64 = 240_000 / size_of::<f32>() as u64; // 240 KB
 fn player_loop(
     internal_recv: Receiver<InternalMessage>,
     internal_send: Sender<Result<(), Error>>,
+    about_to_finish_send: Sender<()>,
     finished_send: Sender<()>,
     timing_send: Sender<(Option<TimeDelta>, Option<TimeDelta>)>,
     playback_state: Arc<RwLock<State>>,
@@ -596,6 +606,7 @@ fn player_loop(
                         player_state.stream_ending = true;
                         pregap_written = aud_out.bytes_written();
                         pregap_buffer = aud_out.buffer_level() as u64;
+                        _ = about_to_finish_send.try_send(());
                         continue 'external;
                     }
                     Err(de) => {
