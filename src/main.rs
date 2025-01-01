@@ -33,10 +33,6 @@ fn main() {
             sleep(std::time::Duration::from_millis(10));
             print_timer(player.position(), player.duration());
 
-            if player.position() >= Some(Duration::seconds(4)) {
-                player.stop();
-            }
-
             if paths.peek().is_some() && player.flag() == Some(Flag::AboutToFinish) {
                 break;
             }
