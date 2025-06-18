@@ -6,6 +6,8 @@ use prismriver::{audio_output::open_output, utils::{self, path_to_uri}, Volume};
 fn main() {
     colog::init();
 
+    let input_files: Vec<_> = std::env::args().skip(1).collect();
+
     let host = cpal::default_host();
     let device = host
         .default_output_device()
@@ -14,7 +16,7 @@ fn main() {
     let mut audio_output = open_output(&device).unwrap();
     audio_output.set_volume(Volume::new(0.5));
 
-    let mut decoder = utils::pick_format(&make_uri("./Kachigumi.flac")).unwrap();
+    let mut decoder = utils::pick_format(&make_uri(&input_files[0])).unwrap();
 
     info!(
         "samplerate: {}; channels: {}; packet size: {}",
