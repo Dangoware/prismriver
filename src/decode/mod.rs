@@ -76,6 +76,8 @@ pub mod dummy {
     }
 
     impl DummyDecoder {
+        const PACKET_SIZE: u64 = 4096;
+
         pub fn new() -> Self {
             Self {
                 instant: Instant::now(),
@@ -101,15 +103,15 @@ pub mod dummy {
         }
 
         fn next_packet_to_buf(&mut self, buf: &mut [f32]) -> Result<usize, DecoderError> {
-            buf[..4096].copy_from_slice(&[0f32; 4096]);
-            Ok(4096)
+            buf[..Self::PACKET_SIZE as usize].copy_from_slice(&[0f32; Self::PACKET_SIZE as usize]);
+            Ok(Self::PACKET_SIZE as usize)
         }
 
         fn params(&self) -> StreamParams {
             StreamParams {
                 rate: 44100,
                 channels: 2,
-                packet_size: 4096,
+                packet_size: Self::PACKET_SIZE,
             }
         }
 

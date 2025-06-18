@@ -1,59 +1,48 @@
-use std::io::{self, Write as _};
-use std::thread::sleep;
-
-use chrono::Duration;
-
+use cpal::traits::HostTrait as _;
 use fluent_uri::Uri;
-use prismriver::utils::path_to_uri;
-use prismriver::{Flag, Prismriver};
-use prismriver::State;
-use prismriver::Volume;
+use log::info;
+use prismriver::{audio_output::open_output, utils::{self, path_to_uri}, Volume};
 
 fn main() {
     colog::init();
-    let mut player = Prismriver::new();
-    player.set_volume(Volume::new(0.4));
 
-    let mut paths = std::env::args().skip(1).peekable();
+    let host = cpal::default_host();
+    let device = host
+        .default_output_device()
+        .expect("no output device available");
 
-    if paths.len() == 0 {
-        println!("Please input a filename or URL");
-        return;
-    }
+    let mut audio_output = open_output(&device).unwrap();
+    audio_output.set_volume(Volume::new(0.5));
 
-    let mut path = paths.next().unwrap();
-    let mut path_uri = make_uri(path.clone());
+    let mut decoder = utils::pick_format(&make_uri("./Kachigumi.flac")).unwrap();
+
+    info!(
+        "samplerate: {}; channels: {}; packet size: {}",
+        decoder.params().rate,
+        decoder.params().channels,
+        decoder.params().packet_size
+    );
+
+    audio_output.update_input_params(decoder.params());
+
+    let mut output_buffer = vec![0f32; decoder.params().packet_size as usize * 4];
+
     loop {
-        println!("Playing \"{}\"", path);
-        player.load_new(&path_uri).unwrap();
-
-        player.play();
-
-        while player.state() == State::Playing || player.state() == State::Paused {
-            sleep(std::time::Duration::from_millis(10));
-            print_timer(player.position(), player.duration());
-
-            if paths.peek().is_some() && player.flag() == Some(Flag::AboutToFinish) {
-                break;
+        if audio_output.buffer_level() > audio_output.buffer_healthy() {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        } else if let Ok(bytes) = decoder.next_packet_to_buf(&mut output_buffer) {
+            if bytes == 0 {
+                break
             }
-        }
 
-        if let State::Errored(e) = player.state() {
-            log::error!("{e}");
-        }
-
-        if let Some(p) = paths.next() {
-            path = p;
-            path_uri = make_uri(path.clone());
-        } else {
+            audio_output.write(&output_buffer[..bytes]);
+        } else if audio_output.buffer_level() == 0 {
             break
         }
     }
-
-    println!("It's so over")
 }
 
-fn make_uri(input: String) -> Uri<String> {
+fn make_uri(input: &str) -> Uri<String> {
     if input.starts_with("http") {
         input.parse::<Uri<String>>().unwrap()
     } else {
@@ -61,7 +50,8 @@ fn make_uri(input: String) -> Uri<String> {
     }
 }
 
-fn print_timer(pos: Option<Duration>, len: Option<Duration>) {
+/*
+fn print_timer(pos: Option<chrono::Duration>, len: Option<chrono::Duration>) {
     let len_string = if let Some(p) = len {
         format!(
             "{:02}:{:02}:{:02}.{:03}",
@@ -89,3 +79,4 @@ fn print_timer(pos: Option<Duration>, len: Option<Duration>) {
     print!("{} / {}\r", pos_string, len_string,);
     io::stdout().flush().unwrap();
 }
+*/

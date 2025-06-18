@@ -11,7 +11,7 @@ use fluent_uri::{
 use crate::decode::{self, Decoder};
 
 #[must_use]
-pub(super) fn pick_format(uri: &Uri<String>) -> Option<Box<dyn Decoder>> {
+pub fn pick_format(uri: &Uri<String>) -> Option<Box<dyn Decoder>> {
     // If it's a network stream, use ffmpeg
     #[cfg(feature = "ffmpeg")]
     if uri.scheme().as_str().starts_with("http") {

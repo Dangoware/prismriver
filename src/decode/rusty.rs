@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fs::File};
+use std::{collections::HashMap, fs::File, io};
 
 use chrono::Duration;
 use fluent_uri::Uri;
@@ -115,8 +115,9 @@ impl Decoder for RustyDecoder {
                 Err(symphonia::core::errors::Error::ResetRequired) => {
                     unimplemented!();
                 }
-                Err(symphonia::core::errors::Error::IoError(_)) => {
-                    return Err(DecoderError::EndOfStream)
+                Err(symphonia::core::errors::Error::IoError(e)) => match e.kind() {
+                    io::ErrorKind::UnexpectedEof => return Err(DecoderError::EndOfStream),
+                    _ => unimplemented!(),
                 }
                 Err(err) => {
                     panic!("{}", err);

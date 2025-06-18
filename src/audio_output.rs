@@ -5,7 +5,7 @@ use cpal::{
 };
 use crossbeam::atomic::AtomicCell;
 use log::{error, info, warn};
-use rb::{RbConsumer as _, RbInspector, RbProducer, RB as _};
+use rb::{Consumer, RbConsumer as _, RbInspector, RbProducer, RB as _};
 use samplerate::{ConverterType, Samplerate};
 use std::{ops::Mul, sync::{atomic::{AtomicBool, AtomicU64, Ordering}, Arc}};
 
@@ -64,7 +64,6 @@ pub trait AudioOutput {
     fn set_volume(&mut self, vol: Volume);
 
     /// Get the volume (amplitude) of the output.
-    #[allow(dead_code)]
     fn volume(&self) -> Volume;
 
     /// Get the state of the output being paused.
@@ -76,7 +75,6 @@ pub trait AudioOutput {
     fn params(&self) -> StreamConfig;
 
     /// Get the input stream parameters.
-    #[allow(dead_code)]
     fn input_params(&self) -> Option<StreamParams>;
 
     /// Update input stream parameters, used for internal calculations.
@@ -95,13 +93,6 @@ pub trait AudioOutput {
     fn buffer_delay(&self) -> Duration {
         let samples_per_second = self.params().channels as i64 * self.params().sample_rate.0 as i64;
         let delay_microseconds = (self.buffer_level() as i64 * 1_000_000) / samples_per_second;
-
-        Duration::microseconds(delay_microseconds)
-    }
-
-    fn calculate_delay(&self, bytes: u64) -> Duration {
-        let samples_per_second = self.params().channels as i64 * self.params().sample_rate.0 as i64;
-        let delay_microseconds = (bytes as i64 * 1_000_000) / samples_per_second;
 
         Duration::microseconds(delay_microseconds)
     }
@@ -175,31 +166,18 @@ impl AudioOutputInner {
         let bytes_written = Arc::new(AtomicU64::new(0));
         let paused = Arc::new(AtomicBool::new(false));
         let volume = Arc::new(AtomicCell::new(Volume::default()));
-        let bytes_thread = Arc::clone(&bytes_written);
-        let paused_thread = Arc::clone(&paused);
-        let thread_volume = Arc::clone(&volume);
+
+        let mut stream_state = OutputState {
+            bytes_written: Arc::clone(&bytes_written),
+            paused: Arc::clone(&paused),
+            volume: Arc::clone(&volume),
+            consumer: ring_buf_consumer,
+        };
+
         let output_stream = device
             .build_output_stream(
                 &output_params,
-                move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                    if paused_thread.load(Ordering::Relaxed) {
-                        data.fill(0f32);
-                        return
-                    }
-
-                    // Write out as many samples as possible from the ring buffer to the audio
-                    // output.
-                    let written = ring_buf_consumer.read(data).unwrap_or(0);
-
-                    data.iter_mut()
-                        .for_each(|s| *s = s.mul(thread_volume.load().as_f32()));
-
-                    let orig = bytes_thread.load(Ordering::Relaxed);
-                    bytes_thread.store(orig + written as u64, Ordering::Relaxed);
-
-                    // Mute any remaining samples.
-                    data[written..].iter_mut().for_each(|s| *s = 0f32);
-                },
+                move |data: &mut [f32], i: &cpal::OutputCallbackInfo| stream_state.output_callback_feeder(data, i),
                 move |err| error!("audio output error: {}", err),
                 None,
             )
@@ -220,6 +198,35 @@ impl AudioOutputInner {
             bytes_written,
             paused,
         }
+    }
+}
+
+struct OutputState {
+    bytes_written: Arc<AtomicU64>,
+    paused: Arc<AtomicBool>,
+    volume: Arc<AtomicCell<Volume>>,
+    consumer: Consumer<f32>
+}
+
+impl OutputState {
+    fn output_callback_feeder(&mut self, data: &mut [f32], _: &cpal::OutputCallbackInfo) {
+        if self.paused.load(Ordering::Relaxed) {
+            data.fill(0f32);
+            return
+        }
+
+        // Write out as many samples as possible from the ring buffer to the audio
+        // output.
+        let written = self.consumer.read(data).unwrap_or(0);
+
+        data.iter_mut()
+            .for_each(|s| *s = s.mul(self.volume.load().as_f32()));
+
+        let orig = self.bytes_written.load(Ordering::Relaxed);
+        self.bytes_written.store(orig + written as u64, Ordering::Relaxed);
+
+        // Mute any remaining samples.
+        data[written..].iter_mut().for_each(|s| *s = 0f32);
     }
 }
 
@@ -252,9 +259,9 @@ impl AudioOutput for AudioOutputInner {
 
         // Write all samples to the ring buffer.
         let mut offset = 0;
-        while let Some(written) = self
+        while let Ok(written) = self
             .ring_buf_producer
-            .write_blocking(&processed_samples[offset..])
+            .write(&processed_samples[offset..])
         {
             if written == 0 {
                 break;
@@ -328,6 +335,7 @@ impl AudioOutput for AudioOutputInner {
                     .unwrap(),
             );
         } else {
+            info!("no resampling needed, output rate matches input");
             self.resampler = None;
         };
 
