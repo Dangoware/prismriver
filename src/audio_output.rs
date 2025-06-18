@@ -78,7 +78,7 @@ pub trait AudioOutput {
     fn input_params(&self) -> Option<StreamParams>;
 
     /// Update input stream parameters, used for internal calculations.
-    fn update_input_params(&mut self, params: StreamParams);
+    fn update_input_params(&mut self, params: StreamParams, resample_filter: Option<ConverterType>);
 
     /// Gets the current level of the buffer in bytes.
     fn buffer_level(&self) -> usize;
@@ -310,7 +310,7 @@ impl AudioOutput for AudioOutputInner {
         self.input_params
     }
 
-    fn update_input_params(&mut self, params: StreamParams) {
+    fn update_input_params(&mut self, params: StreamParams, resample_filter: Option<ConverterType>) {
         // If the sample rate is not equal to the output sample rate,
         // create a resampler to correct it
         if params.rate != self.output_params.sample_rate.0 {
@@ -322,12 +322,17 @@ impl AudioOutput for AudioOutputInner {
 
             // Chose samplerate conversion based on how extreme the sample ratio is
             // TODO: Make this settable manually
-            let converter = match resample_ratio {
+            let mut converter = match resample_ratio {
                 r if r <= 2.0 => ConverterType::SincBestQuality,
                 r if r <= 3.0 => ConverterType::SincMediumQuality,
                 r if r <= 4.0 => ConverterType::SincFastest,
                 _ => ConverterType::Linear,
             };
+
+            if let Some(filter) = resample_filter {
+                converter = filter
+            }
+
             info!("chose {} for sample rate conversion", converter.name());
 
             self.resampler = Some(

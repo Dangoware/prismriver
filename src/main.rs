@@ -23,7 +23,7 @@ fn main() {
         decoder.params().packet_size
     );
 
-    audio_output.update_input_params(decoder.params());
+    audio_output.update_input_params(decoder.params(), Some(samplerate::ConverterType::Linear));
 
     let mut output_buffer = vec![0f32; decoder.params().packet_size as usize * 4];
 
